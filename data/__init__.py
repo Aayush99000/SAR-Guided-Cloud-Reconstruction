@@ -7,6 +7,7 @@ from .preprocessing import (
 )
 from .cloud_mask import (
     generate_cloud_mask,
+    cloud_thickness_weight,
     cloud_coverage_fraction,
     dilate_cloud_mask,
     apply_cloud_mask,
@@ -21,6 +22,7 @@ __all__ = [
     "extract_patches",
     "reconstruct_from_patches",
     "generate_cloud_mask",
+    "cloud_thickness_weight",
     "cloud_coverage_fraction",
     "dilate_cloud_mask",
     "apply_cloud_mask",

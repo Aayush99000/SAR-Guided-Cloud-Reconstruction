@@ -1,0 +1,30 @@
+# @package _global_
+
+paths:
+  # --- Dataset roots ---
+  data_root: /data/SEN12MS-CR
+  train_split: ${paths.data_root}/train
+  val_split: ${paths.data_root}/val
+  test_split: ${paths.data_root}/test
+
+  # --- Split files (list of patch IDs) ---
+  train_list: ${paths.data_root}/splits/train.txt
+  val_list: ${paths.data_root}/splits/val.txt
+  test_list: ${paths.data_root}/splits/test.txt
+
+  # --- Checkpoints ---
+  output_root: ./outputs
+  vqgan_ckpt_dir: ${paths.output_root}/checkpoints/vqgan
+  bridge_ckpt_dir: ${paths.output_root}/checkpoints/bridge
+  best_ckpt: ${paths.bridge_ckpt_dir}/best.ckpt
+
+  # --- Pretrained weights ---
+  pretrained_vqgan: null    # path or null
+  pretrained_backbone: null
+
+  # --- Logging ---
+  log_dir: ${paths.output_root}/logs
+  viz_dir: ${paths.output_root}/visualizations
+
+  # --- Metrics ---
+  metrics_dir: ${paths.output_root}/metrics

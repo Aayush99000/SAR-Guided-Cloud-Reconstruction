@@ -45,13 +45,20 @@ def generate_cloud_mask(
         return mask.unsqueeze(0).clamp(0.0, 1.0)       # (1, H, W)
 
     # --- Brightness heuristic ---
-    # Use visible bands B2, B3, B4 (indices 1, 2, 3 in L1C 13-band order)
-    visible_idx = [1, 2, 3]
+    # Prefer first 3 bands of whatever stack is passed (handles both the full
+    # 13-band stack and a pre-selected RGB+NIR subset).
+    n_bands = s2.shape[0]
+    visible_idx = [min(1, n_bands - 1), min(2, n_bands - 1), min(3, n_bands - 1)]
     visible_bands = s2[visible_idx]                     # (3, H, W)
 
-    # If data looks normalised to [-1, 1], shift to [0, 1]
-    if visible_bands.min() < 0:
+    # Normalise to [0, 1] regardless of input range
+    vmin = visible_bands.min()
+    if vmin < 0:
+        # [-1, 1] → [0, 1]
         visible_bands = (visible_bands + 1.0) / 2.0
+    elif visible_bands.max() > 1.0:
+        # raw reflectance [0, 10000] → [0, 1]
+        visible_bands = visible_bands / 10000.0
 
     brightness = visible_bands.mean(dim=0)              # (H, W)
     mask = (brightness > brightness_threshold).float().unsqueeze(0)

@@ -24,7 +24,7 @@ An advanced PyTorch framework for Earth Observation that reconstructs cloud-occl
 
 ## 🏗️ System Architecture
 
-(`![AMB Architecture](architecture.png)`)\_
+(`![AMB Architecture](architecture.png)`)
 
 **Pipeline Flow:**
 

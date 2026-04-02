@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Outputs / artefacts (large, machine-generated)
+outputs/
+*.ckpt
+*.pt
+*.pth
+*.h5
+
+# Dataset (too large for git)
+/data/SEN12MS-CR/
+*.tif
+*.tiff
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Wandb / TensorBoard logs
+wandb/
+runs/
+lightning_logs/

@@ -254,17 +254,54 @@ echo
 
 # ---------------------------------------------------------------------------
 # Download + extract
+#
+# TUM dataserv is a NextCloud instance.  The /s/<id>/download path returns a
+# 303 → WebDAV redirect that wget mishandles (gets 0 bytes).  The correct
+# stable URL is /index.php/s/<id>/download — curl follows this cleanly.
 # ---------------------------------------------------------------------------
+
+_download_file() {
+    local url="$1"
+    local dest="$2"
+
+    # Rewrite:  /s/<id>/download  →  /index.php/s/<id>/download
+    local fixed_url
+    fixed_url=$(echo "$url" | sed 's|/s/\(m[0-9]*\)/download|/index.php/s/\1/download|')
+
+    echo "[DOWNLOAD] $(basename "$dest")"
+    echo "           $fixed_url"
+
+    # -L  follow redirects
+    # -k  skip SSL verification (mirrors wget --no-check-certificate)
+    # -C- resume partial downloads
+    # --retry 5 with exponential backoff
+    curl -L -k -C - \
+         --retry 5 --retry-delay 5 --retry-max-time 120 \
+         --progress-bar \
+         -o "$dest" \
+         "$fixed_url"
+
+    # Sanity-check: fail loudly on empty file rather than a cryptic tar error
+    local size
+    size=$(wc -c < "$dest")
+    if (( size < 1024 )); then
+        echo "ERROR: Downloaded file is only ${size} bytes — server likely returned" \
+             "an error page.  Check the URL or try again later."
+        rm -f "$dest"
+        exit 1
+    fi
+}
 
 for key in "${!url_dict[@]}"; do
     url="${url_dict[$key]}"
-    # Extract just the filename from the query string (after 'files=')
     filename="${url##*files=}"
-    echo "[DOWNLOAD] $filename"
-    wget --no-check-certificate -c -O "$dl_extract_to/$filename" "$url"
+    dest="$dl_extract_to/$filename"
+
+    _download_file "$url" "$dest"
+
     echo "[EXTRACT]  $filename"
-    tar --extract --file "$dl_extract_to/$filename" -C "$dl_extract_to"
-    rm "$dl_extract_to/$filename"
+    tar --extract --file "$dest" -C "$dl_extract_to"
+    rm "$dest"
 done
 
 # ---------------------------------------------------------------------------

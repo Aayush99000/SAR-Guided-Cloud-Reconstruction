@@ -264,36 +264,74 @@ _download_file() {
     local url="$1"
     local dest="$2"
 
-    # Rewrite:  /s/<id>/download  →  /index.php/s/<id>/download
-    local fixed_url
-    fixed_url=$(echo "$url" | sed 's|/s/\(m[0-9]*\)/download|/index.php/s/\1/download|')
+    # Extract the share token (m1554803, m1639953, etc.) and filename
+    local token filename
+    token=$(echo "$url"    | grep -oP 's/\K(m[0-9]+)')
+    filename=$(echo "$url" | grep -oP 'files=\K[^&]+')
 
-    echo "[DOWNLOAD] $(basename "$dest")"
-    echo "           $fixed_url"
+    # Three URL strategies, tried in order:
+    #   1. index.php share link  (standard NextCloud public share)
+    #   2. Direct WebDAV path    (skips the redirect that confuses proxies)
+    #   3. Original /s/ URL      (fallback to what the official script used)
+    local urls=(
+        "https://dataserv.ub.tum.de/index.php/s/${token}/download?path=/&files=${filename}"
+        "https://dataserv.ub.tum.de/public.php/dav/files/${token}/${filename}"
+        "https://dataserv.ub.tum.de/s/${token}/download?path=/&files=${filename}"
+    )
 
-    # -L            follow redirects
-    # -k            skip SSL verification
-    # --noproxy     bypass the local HTTP proxy for TUM (proxy returns 0 bytes
-    #               when NextCloud redirects through its WebDAV layer)
-    # --retry 5     retry on transient failures
-    # no -C-        omit resume: sending Range: bytes=0- on a fresh file causes
-    #               some proxy+NextCloud combinations to return an empty 206
-    curl -L -k \
-         --noproxy "dataserv.ub.tum.de" \
-         --retry 5 --retry-delay 10 --retry-max-time 300 \
-         --connect-timeout 30 \
-         --user-agent "Mozilla/5.0" \
-         --progress-bar \
-         -o "$dest" \
-         "$fixed_url"
+    # Curl base flags
+    #   -L            follow redirects
+    #   -k            skip SSL verification
+    #   -u "token:"   WebDAV public share auth (empty password)
+    #   unsetting proxy env vars avoids the proxy stripping 0-byte responses;
+    #   we restore them afterwards so the rest of the script is unaffected
+    local _http_proxy="${http_proxy:-}"
+    local _https_proxy="${https_proxy:-}"
+    local _HTTP_PROXY="${HTTP_PROXY:-}"
+    local _HTTPS_PROXY="${HTTPS_PROXY:-}"
+    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 
-    # Sanity-check: fail loudly on empty file rather than a cryptic tar error
-    local size
-    size=$(wc -c < "$dest")
-    if (( size < 1024 )); then
-        echo "ERROR: Downloaded file is only ${size} bytes — server likely returned" \
-             "an error page.  Check the URL or try again later."
+    local size=0
+    for try_url in "${urls[@]}"; do
+        echo "[DOWNLOAD] $filename"
+        echo "           $try_url"
+
+        curl -L -k \
+             -u "${token}:" \
+             --retry 3 --retry-delay 10 --retry-max-time 180 \
+             --connect-timeout 30 \
+             --user-agent "Mozilla/5.0" \
+             --progress-bar \
+             -o "$dest" \
+             "$try_url"
+
+        size=$(wc -c < "$dest" 2>/dev/null || echo 0)
+        if (( size >= 1024 )); then
+            break   # success
+        fi
+        echo "  → Got ${size} bytes, trying next URL strategy..."
         rm -f "$dest"
+    done
+
+    # Restore proxy env vars
+    [[ -n "$_http_proxy"  ]] && export http_proxy="$_http_proxy"
+    [[ -n "$_https_proxy" ]] && export https_proxy="$_https_proxy"
+    [[ -n "$_HTTP_PROXY"  ]] && export HTTP_PROXY="$_HTTP_PROXY"
+    [[ -n "$_HTTPS_PROXY" ]] && export HTTPS_PROXY="$_HTTPS_PROXY"
+
+    if (( size < 1024 )); then
+        echo ""
+        echo "ERROR: All download strategies failed for $filename (got ${size} bytes)."
+        echo ""
+        echo "This usually means the cluster firewall blocks direct connections to"
+        echo "dataserv.ub.tum.de even without the proxy.  Options:"
+        echo "  1. Download on your local machine and scp to the cluster:"
+        echo "       scp $filename <cluster>:$dest"
+        echo "  2. Ask your sysadmin to whitelist: dataserv.ub.tum.de"
+        echo "  3. Run this debug command to see the raw server response:"
+        echo "       curl -v -L -k -u '${token}:' \\"
+        echo "         'https://dataserv.ub.tum.de/public.php/dav/files/${token}/${filename}' \\"
+        echo "         -o /tmp/debug_download.bin 2>&1 | head -80"
         exit 1
     fi
 }

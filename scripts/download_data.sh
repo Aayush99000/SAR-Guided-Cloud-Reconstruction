@@ -271,12 +271,18 @@ _download_file() {
     echo "[DOWNLOAD] $(basename "$dest")"
     echo "           $fixed_url"
 
-    # -L  follow redirects
-    # -k  skip SSL verification (mirrors wget --no-check-certificate)
-    # -C- resume partial downloads
-    # --retry 5 with exponential backoff
-    curl -L -k -C - \
-         --retry 5 --retry-delay 5 --retry-max-time 120 \
+    # -L            follow redirects
+    # -k            skip SSL verification
+    # --noproxy     bypass the local HTTP proxy for TUM (proxy returns 0 bytes
+    #               when NextCloud redirects through its WebDAV layer)
+    # --retry 5     retry on transient failures
+    # no -C-        omit resume: sending Range: bytes=0- on a fresh file causes
+    #               some proxy+NextCloud combinations to return an empty 206
+    curl -L -k \
+         --noproxy "dataserv.ub.tum.de" \
+         --retry 5 --retry-delay 10 --retry-max-time 300 \
+         --connect-timeout 30 \
+         --user-agent "Mozilla/5.0" \
          --progress-bar \
          -o "$dest" \
          "$fixed_url"

@@ -289,7 +289,7 @@ _download_file() {
     local _https_proxy="${https_proxy:-}"
     local _HTTP_PROXY="${HTTP_PROXY:-}"
     local _HTTPS_PROXY="${HTTPS_PROXY:-}"
-    unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
+    #unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY
 
     local size=0
     for try_url in "${urls[@]}"; do
@@ -340,6 +340,21 @@ for key in "${!url_dict[@]}"; do
     url="${url_dict[$key]}"
     filename="${url##*files=}"
     dest="$dl_extract_to/$filename"
+    extracted_dir="$dl_extract_to/${filename%.tar.gz}"
+
+    # Skip if already extracted (folder exists from a previous run)
+    if [[ -d "$extracted_dir" ]]; then
+        echo "[SKIP]     $filename  (already extracted: $extracted_dir)"
+        continue
+    fi
+
+    # Skip if the .tar.gz is already fully downloaded (interrupted mid-extract)
+    if [[ -f "$dest" ]] && (( $(wc -c < "$dest") > 1024 )); then
+        echo "[EXTRACT]  $filename  (resuming from existing archive)"
+        tar --extract --file "$dest" -C "$dl_extract_to"
+        rm "$dest"
+        continue
+    fi
 
     _download_file "$url" "$dest"
 

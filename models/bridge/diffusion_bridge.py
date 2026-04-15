@@ -1,83 +1,91 @@
-"""Latent Diffusion Bridge (OT-ODE) forward and reverse process.
+"""Diffusion Bridge — forward process and training objective.
 
-The bridge is defined between two latent distributions:
-  - z_0 ~ p_src  (cloudy image latent, from VQ-GAN encoder)
-  - z_1 ~ p_tgt  (clear image latent)
+Architecture change from the old velocity-prediction formulation
+----------------------------------------------------------------
+The old bridge added Gaussian noise and trained the network to predict
+the *velocity* (z₁ − z₀).  This file implements the deterministic
+x₀-prediction formulation that matches the new BridgeNoiseSchedule:
 
-Forward process (Schrödinger Bridge / OT interpolation):
-    z_t = (1 - alpha_t) * z_0  +  alpha_t * z_1  +  sigma_t * eps
-    eps ~ N(0, I)
+  Forward  (deterministic):
+    x_t = (1 − α_t) · x_clean  +  α_t · x_cloudy
 
-Reverse ODE (probability flow):
-    dz/dt = v_theta(z_t, t, cond) + d(log alpha_t)/dt * (z_t - z_0)
+  Training objective  (x₀-prediction):
+    L = E_t [ λ_cloud · MSE(x̂₀ · M, x_clean · M)
+              + λ_clear · MSE(x̂₀ · (1−M), x_clean · (1−M)) ]
 
-A neural velocity field v_theta (the U-Net backbone) is trained to predict
-the *straight* velocity (z_1 - z_0) at each time step.
+    where M is the cloud binary mask (1 = cloudy pixel, 0 = clear pixel).
+
+  Reverse ODE (inference):
+    x_{t−s} = (1 − r) · x̂₀  +  r · x_t,   r = α_{t−s} / α_t
+
+The network (SAROpticalUNet) predicts x̂₀ = f_θ(x_t, t, x_cloudy, SAR).
+No VQ-GAN encoding is required — the bridge operates in pixel space.
 """
 
 from __future__ import annotations
 
-from typing import Callable, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import torch
 import torch.nn as nn
 
-from .noise_schedule import BaseAlphaSchedule, get_schedule
+from .noise_schedule import BridgeNoiseSchedule
 
 
 class DiffusionBridge(nn.Module):
-    """Manages the forward noising process and training objective.
-
-    The reverse process (sampling) is handled by :class:`ODESampler`.
+    """Manages the forward process and training objective for pixel-space bridge.
 
     Args:
-        velocity_net:    The U-Net / backbone that predicts v(z_t, t, cond).
-        schedule_name:   One of "sine", "linear", "cosine".
-        diffusion_steps: Number of discrete time steps T used during training.
-        ot_reg:          Optional OT regularisation weight (currently a loss scale).
+        model:           SAROpticalUNet (or any module matching its forward
+                         signature: forward(x_t, t, x_cloudy_mean, sar,
+                         cloud_mask) → x_hat_0).
+        schedule_type:   "linear" | "sine" | "cosine"  (default "cosine").
+        num_steps:       Training timestep count T  (default 1000).
+        lambda_cloud:    Loss weight on cloud-masked pixels  (default 2.0).
+        lambda_clear:    Loss weight on cloud-free pixels    (default 0.5).
+        t_low:           Lower bound for training t samples  (default 0.02).
     """
 
     def __init__(
         self,
-        velocity_net: nn.Module,
-        schedule_name: str = "sine",
-        diffusion_steps: int = 1000,
-        ot_reg: float = 0.01,
+        model:          nn.Module,
+        schedule_type:  str   = "cosine",
+        num_steps:      int   = 1000,
+        lambda_cloud:   float = 2.0,
+        lambda_clear:   float = 0.5,
+        t_low:          float = 0.02,
     ) -> None:
         super().__init__()
-        self.velocity_net = velocity_net
-        self.schedule: BaseAlphaSchedule = get_schedule(schedule_name)
-        self.T = diffusion_steps
-        self.ot_reg = ot_reg
+        self.model         = model
+        self.schedule      = BridgeNoiseSchedule(num_steps=num_steps,
+                                                 schedule_type=schedule_type)
+        self.lambda_cloud  = lambda_cloud
+        self.lambda_clear  = lambda_clear
+        self.t_low         = t_low
 
     # ------------------------------------------------------------------
-    # Forward (noising) process
+    # Forward process helper
     # ------------------------------------------------------------------
 
     def q_sample(
         self,
-        z0: torch.Tensor,
-        z1: torch.Tensor,
-        t: torch.Tensor,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Sample z_t given endpoints z_0 and z_1.
+        x_clean:  torch.Tensor,
+        x_cloudy: torch.Tensor,
+        t:        torch.Tensor,
+    ) -> torch.Tensor:
+        """Sample x_t from the deterministic forward bridge.
+
+        x_t = (1 − α_t) · x_clean  +  α_t · x_cloudy
 
         Args:
-            z0: Source latent (B, D, H, W).
-            z1: Target latent (B, D, H, W).
-            t:  Time values in [0, 1] of shape (B,).
+            x_clean:  Clean reference image  (B, C, H, W).
+            x_cloudy: Cloudy input           (B, C, H, W).
+            t:        Normalized time        (B,)  in [0, 1].
 
         Returns:
-            z_t:  Noised latent.
-            eps:  The noise sample used (for loss computation).
+            x_t  (B, C, H, W).
         """
-        alpha, sigma = self.schedule.alpha_sigma(t)
-        alpha = alpha.view(-1, 1, 1, 1)
-        sigma = sigma.view(-1, 1, 1, 1)
-
-        eps = torch.randn_like(z0)
-        z_t = (1.0 - alpha) * z0 + alpha * z1 + sigma * eps
-        return z_t, eps
+        return self.schedule.q_sample(x_clean, x_cloudy, t)
 
     # ------------------------------------------------------------------
     # Training objective
@@ -85,52 +93,122 @@ class DiffusionBridge(nn.Module):
 
     def training_loss(
         self,
-        z0: torch.Tensor,
-        z1: torch.Tensor,
-        cond: Optional[torch.Tensor] = None,
-    ) -> Tuple[torch.Tensor, dict]:
-        """Compute the bridge training loss.
+        x_clean:       torch.Tensor,
+        x_cloudy:      torch.Tensor,
+        x_cloudy_mean: torch.Tensor,
+        sar:           torch.Tensor,
+        cloud_mask:    Optional[torch.Tensor] = None,
+    ) -> Tuple[torch.Tensor, Dict[str, float]]:
+        """Compute the x₀-prediction training loss.
 
-        Uses a *flow-matching* / velocity-prediction objective:
-            L = E_t,z_t [ ||v_theta(z_t, t, cond) - (z_1 - z_0)||^2 ]
-
-        An optional OT regularisation term penalises the quadratic transport
-        cost E[||z_1 - z_0||^2] to encourage straight trajectories.
+        Samples a random t, constructs x_t via the forward bridge, runs the
+        model to predict x̂₀, and applies a cloud-mask-weighted MSE.
 
         Args:
-            z0:   Source latents (B, D, H, W).
-            z1:   Target latents (B, D, H, W).
-            cond: Optional conditioning tensor (e.g. SAR embedding).
+            x_clean:       Clean ground-truth image    (B, C, H, W)  in [0, 1].
+            x_cloudy:      Cloudy input image          (B, C, H, W)  in [0, 1].
+            x_cloudy_mean: Mean of cloudy observations (B, C, H, W)  — passed
+                           to the model as additional conditioning.
+            sar:           SAR image VV+VH             (B, 2, H, W)  in [0, 1].
+            cloud_mask:    Binary cloud mask           (B, 1, H, W)  in {0, 1}.
+                           1 = cloudy pixel, 0 = cloud-free pixel.
+                           If None, all pixels are weighted equally.
 
         Returns:
-            loss:    Scalar loss tensor.
-            metrics: Dict with sub-loss values for logging.
+            loss:    Scalar training loss.
+            metrics: Dict with "loss", "cloud_mse", "clear_mse" values.
         """
-        B = z0.shape[0]
-        # Sample t uniformly in (0, 1)
-        t = torch.rand(B, device=z0.device)
+        B = x_clean.shape[0]
 
-        z_t, _ = self.q_sample(z0, z1, t)
-        v_target = z1 - z0                                # (B, D, H, W)
-        v_pred = self.velocity_net(z_t, t, cond)         # (B, D, H, W)
+        # Sample t uniformly from (t_low, 1.0)
+        t = self.schedule.sample_t(B, device=x_clean.device, low=self.t_low)
 
-        flow_loss = ((v_pred - v_target) ** 2).mean()
+        # Forward bridge: construct x_t
+        x_t = self.schedule.q_sample(x_clean, x_cloudy, t)
 
-        ot_loss = (v_target ** 2).mean() * self.ot_reg   # penalise long bridges
+        # Model prediction: x̂₀ = f_θ(x_t, t, x_cloudy_mean, SAR, mask)
+        x_hat_0 = self.model(x_t, t, x_cloudy_mean, sar, cloud_mask)
 
-        loss = flow_loss + ot_loss
-        return loss, {"flow_loss": flow_loss.item(), "ot_loss": ot_loss.item()}
+        # Cloud-mask-weighted MSE
+        sq_err = (x_hat_0 - x_clean) ** 2      # (B, C, H, W)
+
+        if cloud_mask is not None:
+            # cloud_mask: (B, 1, H, W)  →  broadcast over C
+            cloud_pixels = cloud_mask                    # 1 = cloudy
+            clear_pixels = 1.0 - cloud_mask             # 1 = clear
+
+            n_cloud = cloud_pixels.sum().clamp(min=1.0)
+            n_clear = clear_pixels.sum().clamp(min=1.0)
+
+            cloud_mse = (sq_err * cloud_pixels).sum() / n_cloud
+            clear_mse = (sq_err * clear_pixels).sum() / n_clear
+
+            loss = self.lambda_cloud * cloud_mse + self.lambda_clear * clear_mse
+        else:
+            cloud_mse = sq_err.mean()
+            clear_mse = sq_err.mean()
+            loss      = cloud_mse
+
+        metrics = {
+            "loss":      loss.item(),
+            "cloud_mse": cloud_mse.item(),
+            "clear_mse": clear_mse.item(),
+        }
+        return loss, metrics
 
     # ------------------------------------------------------------------
-    # Convenience: score / velocity at inference
+    # Inference helpers
     # ------------------------------------------------------------------
 
     @torch.no_grad()
-    def predict_velocity(
+    def predict_clean(
         self,
-        z_t: torch.Tensor,
-        t: torch.Tensor,
-        cond: Optional[torch.Tensor] = None,
+        x_t:           torch.Tensor,
+        t:             torch.Tensor,
+        x_cloudy_mean: torch.Tensor,
+        sar:           torch.Tensor,
+        cloud_mask:    Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Evaluate the velocity network (no grad)."""
-        return self.velocity_net(z_t, t, cond)
+        """Run model forward to predict x̂₀ (no gradient)."""
+        return self.model(x_t, t, x_cloudy_mean, sar, cloud_mask)
+
+    @torch.no_grad()
+    def sample(
+        self,
+        x_cloudy:      torch.Tensor,
+        x_cloudy_mean: torch.Tensor,
+        sar:           torch.Tensor,
+        cloud_mask:    Optional[torch.Tensor] = None,
+        num_steps:     int = 50,
+        return_trajectory: bool = False,
+    ) -> torch.Tensor:
+        """Full reverse-ODE inference: x_T → x̂₀.
+
+        Args:
+            x_cloudy:      Cloudy starting image     (B, C, H, W).
+            x_cloudy_mean: Mean cloudy conditioning  (B, C, H, W).
+            sar:           SAR image                 (B, 2, H, W).
+            cloud_mask:    Optional cloud mask       (B, 1, H, W).
+            num_steps:     Number of denoising steps N.
+            return_trajectory: If True, return list of all x_t states.
+
+        Returns:
+            Predicted clean image  (B, C, H, W), or list if return_trajectory.
+        """
+        timesteps = self.schedule.get_inference_steps(num_steps)  # (N+1,)
+        device    = x_cloudy.device
+
+        x_t       = x_cloudy.clone()       # start at t = 1 (fully cloudy)
+        trajectory = [x_t] if return_trajectory else None
+
+        for i in range(num_steps):
+            t      = timesteps[i].to(device).expand(x_t.shape[0])
+            t_prev = timesteps[i + 1].to(device).expand(x_t.shape[0])
+
+            x_hat_0 = self.predict_clean(x_t, t, x_cloudy_mean, sar, cloud_mask)
+            x_t     = self.schedule.reverse_step(x_t, x_hat_0, t, t_prev)
+
+            if return_trajectory:
+                trajectory.append(x_t)
+
+        return trajectory if return_trajectory else x_t

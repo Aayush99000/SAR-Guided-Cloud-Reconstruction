@@ -52,10 +52,11 @@ data/
 
 ---
 
+
 ## Architecture
 
-```
 
+```
 Sentinel-1 (VV/VH) ──► SAREncoder ──────────────────────────────────────────────┐
 │ cross-attn
 Sentinel-2 cloudy ──► VQ-GAN Encoder (frozen) ──► z_0 │

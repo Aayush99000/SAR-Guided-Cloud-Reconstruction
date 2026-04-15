@@ -34,7 +34,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
-#SBATCH --gres=gpu:l40:1               # L40 is fastest GPU on Discovery
+#SBATCH --gres=gpu:v100-sxm2:1         # V100 SXM2 nodes idle on Discovery; L40 nodes often busy
 #SBATCH --time=01:00:00                # sharing partition max = 1 h
 #SBATCH --output=logs/slurm/train_%j.out
 #SBATCH --error=logs/slurm/train_%j.err

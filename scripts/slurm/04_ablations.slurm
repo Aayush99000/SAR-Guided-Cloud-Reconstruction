@@ -28,13 +28,13 @@
 #   sbatch --dependency=afterok:<train_job_id> scripts/slurm/04_ablations.slurm
 # =============================================================================
 #SBATCH --job-name=sar_ablation
-#SBATCH --partition=gpu
+#SBATCH --partition=sharing
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:a100:1
-#SBATCH --time=48:00:00
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:l40:1
+#SBATCH --time=01:00:00
 #SBATCH --array=0-4                    # 5 tasks (0..4); remove to run all as one job
 #SBATCH --output=logs/slurm/ablation_%A_%a.out
 #SBATCH --error=logs/slurm/ablation_%A_%a.err

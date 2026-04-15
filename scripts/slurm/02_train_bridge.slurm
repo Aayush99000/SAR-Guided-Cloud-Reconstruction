@@ -29,13 +29,13 @@
 #   DRY_RUN=1 bash scripts/slurm/02_train_bridge.slurm
 # =============================================================================
 #SBATCH --job-name=sar_bridge_train
-#SBATCH --partition=gpu                  # adjust: gpu / short / a100 / gpu-long
+#SBATCH --partition=sharing
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
-#SBATCH --gres=gpu:a100:1               # adjust: a100 / v100 / gpu
-#SBATCH --time=08:00:00                 # 8-hour wall time
+#SBATCH --mem=32G
+#SBATCH --gres=gpu:l40:1               # L40 is fastest GPU on Discovery
+#SBATCH --time=01:00:00                # sharing partition max = 1 h
 #SBATCH --output=logs/slurm/train_%j.out
 #SBATCH --error=logs/slurm/train_%j.err
 
@@ -51,14 +51,14 @@ DRY_RUN="${DRY_RUN:-0}"
 # CONFIGURATION — edit these to match your setup
 # =============================================================================
 TOTAL_EPOCHS=100                        # must match training.num_epochs in config
-CKPT_DIR="outputs/checkpoints/bridge"
-LAST_CKPT="${CKPT_DIR}/last.ckpt"
+SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
+CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge"
+LAST_CKPT="${CKPT_DIR}/latest.ckpt"    # train_bridge.py writes latest.ckpt every epoch
 THIS_SCRIPT="$(realpath "${BASH_SOURCE[0]}")"
 
 # GPU/cluster tuning
 NUM_WORKERS=8
-# Uncomment to override data root (e.g. on scratch):
-# DATA_ROOT_OVERRIDE="paths.data_root=/scratch/${USER}/SEN12MS-CR"
+DATA_ROOT_OVERRIDE="paths.output_root=${SCRATCH}/outputs"
 # =============================================================================
 
 # --- Environment -------------------------------------------------------------
@@ -147,7 +147,7 @@ if [[ "${COMPLETED_EPOCHS}" -ge "${TOTAL_EPOCHS}" ]]; then
 fi
 
 # --- Resubmit for the next session -------------------------------------------
-NEXT_CMD="sbatch --export=ALL,RESUME=${LAST_CKPT} ${THIS_SCRIPT}"
+NEXT_CMD="sbatch --export=ALL,RESUME=${LAST_CKPT} ${THIS_SCRIPT}"   # LAST_CKPT=latest.ckpt
 echo ""
 echo "[INFO] Epochs remaining: $(( TOTAL_EPOCHS - COMPLETED_EPOCHS ))"
 echo "[INFO] Resubmitting:  ${NEXT_CMD}"

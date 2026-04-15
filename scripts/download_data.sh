@@ -399,11 +399,11 @@ echo
 # ---------------------------------------------------------------------------
 # Reorganise SEN12MS-CR into the flat layout expected by SEN12MSCRDataset
 #
-# Input (per-season subdirs, original layout):
+# Input (per-season subdirs with tile subdir, original layout):
 #   SEN12MSCR/
-#       ROIs1158_spring_s1/       ROIs1158_spring_s1_p1.tif ...
-#       ROIs1158_spring_s2/       ROIs1158_spring_s2_p1.tif ...
-#       ROIs1158_spring_s2_cloudy/ ROIs1158_spring_s2_cloudy_p1.tif ...
+#       ROIs1158_spring_s1/s1_1/    ROIs1158_spring_s1_1_p100.tif ...
+#       ROIs1158_spring_s2/s2_1/    ROIs1158_spring_s2_1_p100.tif ...
+#       ROIs1158_spring_s2_cloudy/s2_cloudy_1/  ROIs1158_spring_s2_cloudy_1_p100.tif ...
 #       ROIs1868_summer_s1/ ...
 #       ...
 #
@@ -424,26 +424,29 @@ if [ "$SEN12MSCR" = "true" ]; then
 
     mkdir -p "$MSCR/s1" "$MSCR/s2" "$MSCR/s2_cloudy" "$MSCR/splits"
 
-    # Move files from per-season subdirs into flat target dirs
-    # S2 cloud-free
-    find "$MSCR" -maxdepth 2 -path "*/ROIs*_s2/*_s2_p*.tif" \
+    # Move files from per-season subdirs into flat target dirs.
+    # Actual layout after extraction:
+    #   ROIs1158_spring_s2/s2_1/ROIs1158_spring_s2_1_p100.tif
+    # Files live one level deeper than expected — use wildcard subdir match.
+
+    # S2 cloud-free  (ROIs*_s2/<tile_subdir>/*.tif, exclude *cloudy*)
+    find "$MSCR" -maxdepth 4 -path "*/ROIs*_s2/*/*.tif" \
         ! -path "*cloudy*" -exec mv {} "$MSCR/s2/" \;
 
-    # S2 cloudy
-    find "$MSCR" -maxdepth 2 -path "*/ROIs*_s2_cloudy/*.tif" \
+    # S2 cloudy  (ROIs*_s2_cloudy/<tile_subdir>/*.tif)
+    find "$MSCR" -maxdepth 4 -path "*/ROIs*_s2_cloudy/*/*.tif" \
         -exec mv {} "$MSCR/s2_cloudy/" \;
 
-    # S1 (only if downloaded)
+    # S1  (ROIs*_s1/<tile_subdir>/*.tif)
     if [ "$S1" = "true" ]; then
-        find "$MSCR" -maxdepth 2 -path "*/ROIs*_s1/*.tif" \
+        find "$MSCR" -maxdepth 4 -path "*/ROIs*_s1/*/*.tif" \
             -exec mv {} "$MSCR/s1/" \;
     fi
 
-    # Remove now-empty per-season subdirs
-    find "$MSCR" -maxdepth 1 -type d -name "ROIs*" -exec rm -rf {} + 2>/dev/null || true
+    # Remove now-empty per-season subdirs (COMMENTED OUT FOR SAFETY)
+    # find "$MSCR" -maxdepth 1 -type d -name "ROIs*" -exec rm -rf {} + 2>/dev/null || true
 
     echo "Flat layout created. Generating CSV splits..."
-
     # Generate splits with Python (available in any standard conda/venv)
     python3 - "$MSCR" "$S1" <<'PYEOF'
 import sys, csv, random, pathlib
@@ -461,10 +464,12 @@ splits_dir   = mscr / "splits"
 # ---------------------------------------------------------------------------
 records = []
 for s2_path in sorted(s2_dir.glob("*.tif")):
-    stem = s2_path.stem                     # e.g. ROIs1158_spring_s2_p42
-    # Derive sibling filenames
-    s2c_name = stem.replace("_s2_p", "_s2_cloudy_p") + ".tif"
-    s1_name  = stem.replace("_s2_p", "_s1_p") + ".tif"
+    stem = s2_path.stem   # e.g. ROIs1158_spring_s2_100_p101
+    # Derive sibling filenames by swapping the modality token (_s2_ → _s1_ / _s2_cloudy_)
+    # Use count=1 so only the first occurrence of _s2_ is replaced (avoids
+    # accidentally touching the patch number).
+    s2c_name = stem.replace("_s2_", "_s2_cloudy_", 1) + ".tif"
+    s1_name  = stem.replace("_s2_", "_s1_", 1) + ".tif"
 
     s2c_path = s2c_dir / s2c_name
     s1_path  = s1_dir  / s1_name
@@ -474,12 +479,13 @@ for s2_path in sorted(s2_dir.glob("*.tif")):
     if has_s1 and not s1_path.exists():
         continue
 
-    # Parse season and ROI from filename  (ROIs1158_spring_s2_p42)
-    parts  = stem.split("_")           # ['ROIs1158', 'spring', 's2', 'p42']
+    # Parse fields from filename  (ROIs1158_spring_s2_100_p101)
+    parts  = stem.split("_")           # ['ROIs1158', 'spring', 's2', '100', 'p101']
     roi    = parts[0]                  # ROIs1158
     season = parts[1]                  # spring
-    patch  = parts[-1]                 # p42
-    pid    = f"{roi}_{season}_{patch}" # ROIs1158_spring_p42
+    tile   = parts[3]                  # 100  (tile/region ID)
+    patch  = parts[4]                  # p101
+    pid    = f"{roi}_{season}_{tile}_{patch}"  # ROIs1158_spring_100_p101
 
     records.append({
         "patch_id":  pid,

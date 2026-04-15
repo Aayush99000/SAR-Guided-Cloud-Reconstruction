@@ -1,25 +1,37 @@
-"""Full U-Net assembling NAFBlocks, Bidirectional Mamba SSM, and SAR Fusion Blocks.
+"""SAR-guided optical cloud reconstruction U-Net (DB-CR two-branch design).
 
-The architecture:
-  Encoder path  : NAFBlock stacks with stride-2 down-sampling at each level.
-  Bottleneck    : BidirectionalMamba (global sequence modelling on flattened tokens).
-  Decoder path  : Up-sample + skip-concat + 1×1 projection + NAFBlock stacks
-                  + SARFusionBlock (cross-attention with SAR features).
-  Conditioning  : Timestep t injected into every NAFBlock via its internal MLP.
+Two branches run in parallel then fuse via SFBlock:
 
-Bug-fixes vs. original
------------------------
-1. Decoder channel mismatch: after torch.cat([up(h), skip]), h has
-   (ch + skip_ch) channels.  A 1×1 skip_proj reduces it back to ch
-   before the NAFBlocks and SARFusionBlock — the original ``pass`` stub
-   would crash on the second decoder NAFBlock.
-2. Time embedding was computed but never forwarded to NAFBlocks.
-   All NAFBlocks now receive t_emb; their internal SiLU→Linear MLP
-   handles the projection.
-3. Bottleneck nn.Sequential couldn't forward kwargs.  Changed to
-   nn.ModuleList so t_emb can be passed explicitly.
-4. Removed the now-redundant ``time_projs`` ModuleList (each NAFBlock
-   owns its own time projection).
+  SAR encoder       4-level downsampling backbone, outputs multi-scale
+                    features F_sar_0 … F_sar_3 at decreasing spatial scales.
+                    No diffusion timestep conditioning.
+
+  Optical U-Net     Encoder–Middle–Decoder with SAR fusion at every encoder
+                    level, global sequence modelling via VimBlocks at the
+                    bottleneck, and timestep conditioning in every NAFBlock.
+
+Input to the optical encoder:
+    cat(x_t, x_cloudy_mean, sar)  →  (B, 2·C_opt + C_sar, H, W)
+
+Output:
+    Predicted clean image x_0  →  (B, C_opt, H, W)
+
+Architecture at default settings  (base_channels=64, channel_mult=[1,2,4,8],
+                                    256×256 input):
+┌──────────────────────────────────────────────────────────────┐
+│  Scale 0  H×W     ch=64   enc_0 (1 NAFBlk) + SFBlock  ─ skip_0
+│  Scale 1  H/2×W/2 ch=128  enc_1 (1 NAFBlk) + SFBlock  ─ skip_1
+│  Scale 2  H/4×W/4 ch=256  enc_2 (1 NAFBlk) + SFBlock  ─ skip_2
+│  Scale 3  H/8×W/8 ch=512  enc_3 (28 NAFBlk) + SFBlock ─ skip_3
+│  Middle                   VimBlock × 2 + NAFBlock
+│  Scale 3  H/8×W/8 ch=512  cat(mid,skip_3) → proj → 1 NAFBlk
+│  Scale 2  H/4×W/4 ch=256  ↑Up + cat(skip_2) → proj → 1 NAFBlk
+│  Scale 1  H/2×W/2 ch=128  ↑Up + cat(skip_1) → proj → 1 NAFBlk
+│  Scale 0  H×W     ch=64   ↑Up + cat(skip_0) → proj → 1 NAFBlk
+│  Output  1×1 conv ch=C_opt
+└──────────────────────────────────────────────────────────────┘
+
+Reference: Ebel et al., "DBER: Cross-Modal Cloud Removal", 2022 (DB-CR).
 """
 
 from __future__ import annotations
@@ -32,7 +44,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .nafblock import NAFBlock
-from .vim_ssm import BidirectionalMamba
+from .vim_ssm import VimBlock
 from .sfblock import SARFusionBlock
 
 
@@ -41,25 +53,28 @@ from .sfblock import SARFusionBlock
 # ---------------------------------------------------------------------------
 
 class SinusoidalPosEmb(nn.Module):
+    """Sinusoidal position embedding for scalar timesteps."""
+
     def __init__(self, dim: int) -> None:
         super().__init__()
         self.dim = dim
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        """t: (B,) → (B, dim)"""
+        """t: (B,) in [0, 1]  →  (B, dim)"""
         half = self.dim // 2
         freqs = torch.exp(
-            -math.log(10000) * torch.arange(half, device=t.device) / (half - 1)
+            -math.log(10_000) * torch.arange(half, device=t.device) / max(half - 1, 1)
         )
-        args = t[:, None] * freqs[None]
-        emb = torch.cat([args.sin(), args.cos()], dim=-1)
-        return emb
+        args = t[:, None] * freqs[None]               # (B, half)
+        return torch.cat([args.sin(), args.cos()], dim=-1)
 
 
 class TimeEmbedding(nn.Module):
+    """Sinusoidal → 2-layer MLP → time_emb_dim."""
+
     def __init__(self, dim: int) -> None:
         super().__init__()
-        self.sinusoidal = SinusoidalPosEmb(dim)
+        self.sin_emb = SinusoidalPosEmb(dim)
         self.mlp = nn.Sequential(
             nn.Linear(dim, dim * 4),
             nn.SiLU(),
@@ -67,17 +82,18 @@ class TimeEmbedding(nn.Module):
         )
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
-        return self.mlp(self.sinusoidal(t))
+        return self.mlp(self.sin_emb(t))
 
 
 # ---------------------------------------------------------------------------
-# Down / Up sample wrappers
+# Down / Up sample primitives
 # ---------------------------------------------------------------------------
 
 class DownSample(nn.Module):
+    """Stride-2 conv: (B, C, H, W) → (B, 2C, H/2, W/2)."""
+
     def __init__(self, channels: int) -> None:
         super().__init__()
-        # stride-2 conv doubles channels while halving spatial size
         self.conv = nn.Conv2d(channels, channels * 2, 2, stride=2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -85,190 +101,335 @@ class DownSample(nn.Module):
 
 
 class UpSample(nn.Module):
+    """PixelShuffle ×2: (B, C, H, W) → (B, C/2, 2H, 2W).
+
+    1×1 conv maps C → 2C; PixelShuffle(2) maps 2C → C/2 at 2× resolution.
+    """
+
     def __init__(self, channels: int) -> None:
         super().__init__()
-        # PixelShuffle(2): (B, 4C, H, W) → (B, C, 2H, 2W)
-        # conv maps C → 2C; shuffle maps 2C → C/2... wait:
-        # shuffle requires 4×out channels → conv must produce 4×out.
-        # We want out = channels//2, so conv produces channels//2 * 4 = 2*channels.
-        self.conv = nn.Conv2d(channels, channels * 2, 1, bias=False)
-        self.shuffle = nn.PixelShuffle(2)   # (B, 2C, H, W) → (B, C//2, 2H, 2W)
+        self.conv    = nn.Conv2d(channels, channels * 2, 1, bias=False)
+        self.shuffle = nn.PixelShuffle(2)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.shuffle(self.conv(x))
 
 
 # ---------------------------------------------------------------------------
-# U-Net
+# Main model
 # ---------------------------------------------------------------------------
 
-class UNet(nn.Module):
-    """SAR-conditioned U-Net velocity network for the diffusion bridge.
+class SAROpticalUNet(nn.Module):
+    """Two-branch SAR-guided diffusion U-Net for cloud removal.
 
     Args:
-        in_channels:          Channels of the noised latent z_t.
-        cond_channels:        SAR feature channels (from a pretrained SAR encoder).
-        base_channels:        Base channel width.
-        channel_multipliers:  Per-level channel multipliers.
-        num_res_blocks:       NAFBlocks per encoder/decoder level.
-        mamba_d_state:        SSM state dimension for bottleneck Mamba block.
-        attn_resolutions:     Spatial sizes at which SARFusionBlocks are inserted.
-        dropout:              Dropout probability in NAFBlocks.
+        in_channels_optical:  Optical image channels (4 = RGB+NIR, 13 = full S2).
+        in_channels_sar:      SAR channels (2 = VV+VH).
+        base_channels:        Feature width at encoder level 0.
+        channel_mult:         Per-level channel multipliers (4 values).
+        num_nafblocks:        NAFBlocks per encoder level (same for both branches).
+                              Follows DB-CR: most capacity at the deepest level.
+        num_dec_nafblocks:    NAFBlocks per decoder level.  Default: [1, 1, 1, 1].
+        num_vim_blocks:       VimBlock count in the bottleneck.
+        num_heads_sfblock:    SARFusionBlock heads per encoder level.
+        time_emb_dim:         Timestep embedding dimension.
+        dropout:              NAFBlock dropout probability (default 0 = off).
+        vim_d_state:          Mamba SSM state size inside VimBlocks.
     """
 
     def __init__(
         self,
-        in_channels: int = 256,
-        cond_channels: int = 256,
-        base_channels: int = 64,
-        channel_multipliers: List[int] = None,
-        num_res_blocks: int = 2,
-        mamba_d_state: int = 16,
-        attn_resolutions: List[int] = None,
-        dropout: float = 0.1,
+        in_channels_optical: int       = 4,
+        in_channels_sar:     int       = 2,
+        base_channels:       int       = 64,
+        channel_mult:        List[int] = None,
+        num_nafblocks:       List[int] = None,
+        num_dec_nafblocks:   List[int] = None,
+        num_vim_blocks:      int       = 2,
+        num_heads_sfblock:   List[int] = None,
+        time_emb_dim:        int       = 256,
+        dropout:             float     = 0.0,
+        vim_d_state:         int       = 16,
     ) -> None:
         super().__init__()
-        channel_multipliers = channel_multipliers or [1, 2, 4, 8]
-        attn_resolutions    = attn_resolutions    or [16, 8]
 
-        time_dim = base_channels * 4
-        self.time_emb = TimeEmbedding(time_dim)
+        # --- Defaults (DB-CR recipe) ---
+        channel_mult      = channel_mult      or [1, 2, 4, 8]
+        num_nafblocks     = num_nafblocks     or [1, 1, 1, 28]
+        num_dec_nafblocks = num_dec_nafblocks or [1, 1, 1, 1]
+        num_heads_sfblock = num_heads_sfblock or [1, 1, 2, 4]
 
-        # --- Initial projection ---
-        self.init_conv = nn.Conv2d(in_channels, base_channels, 3, padding=1)
+        N = len(channel_mult)
+        assert len(num_nafblocks)     == N, "num_nafblocks length must match channel_mult"
+        assert len(num_dec_nafblocks) == N, "num_dec_nafblocks length must match channel_mult"
+        assert len(num_heads_sfblock) == N, "num_heads_sfblock length must match channel_mult"
 
-        # --- Encoder ---
-        self.encoder_blocks  = nn.ModuleList()
-        self.downs           = nn.ModuleList()
-        self.sar_fusions_enc = nn.ModuleList()
+        # channels[i] = feature width at encoder level i
+        channels: List[int] = [base_channels * m for m in channel_mult]
+        self.channels   = channels
+        self.num_levels = N
 
-        enc_channels: List[int] = []
-        ch = base_channels
-        current_res = 256
-        for mult in channel_multipliers:
-            out_ch = base_channels * mult
-            # Pass time_dim so each NAFBlock can condition on t_emb
-            blocks = nn.ModuleList(
-                [NAFBlock(ch, drop_out=dropout, time_emb_dim=time_dim)
-                 for _ in range(num_res_blocks)]
+        # ----------------------------------------------------------------
+        # Shared time embedding  (optical branch only)
+        # ----------------------------------------------------------------
+        self.time_emb = TimeEmbedding(time_emb_dim)
+
+        # ----------------------------------------------------------------
+        # SAR encoder  —  no diffusion timestep conditioning
+        #
+        # Level i produces F_sar_i  (B, channels[i], H/2^i, W/2^i).
+        # DownSample between levels 0→1, 1→2, 2→3  (3 downsamples).
+        # ----------------------------------------------------------------
+        self.sar_input = nn.Conv2d(in_channels_sar, channels[0], 1, bias=False)
+
+        self.sar_enc_blocks = nn.ModuleList()
+        self.sar_downs      = nn.ModuleList()
+
+        for i in range(N):
+            self.sar_enc_blocks.append(
+                nn.ModuleList([NAFBlock(channels[i]) for _ in range(num_nafblocks[i])])
             )
-            self.encoder_blocks.append(blocks)
+            if i < N - 1:
+                self.sar_downs.append(DownSample(channels[i]))
 
-            if current_res in attn_resolutions:
-                self.sar_fusions_enc.append(SARFusionBlock(ch, cond_channels))
-            else:
-                self.sar_fusions_enc.append(nn.Identity())
+        # ----------------------------------------------------------------
+        # Optical encoder  —  NAFBlocks + SFBlock at each level
+        #
+        # Input: cat(x_t, x_cloudy_mean, sar_raw)  —  avoids SAR re-extraction.
+        # ----------------------------------------------------------------
+        in_ch_combined = 2 * in_channels_optical + in_channels_sar
+        self.opt_input = nn.Conv2d(in_ch_combined, channels[0], 1, bias=False)
 
-            enc_channels.append(ch)
-            self.downs.append(DownSample(ch))
-            ch = out_ch
-            current_res //= 2
+        self.enc_blocks   = nn.ModuleList()
+        self.enc_sfblocks = nn.ModuleList()
+        self.enc_downs    = nn.ModuleList()
 
-        # --- Bottleneck: NAFBlocks + Bidirectional Mamba ---
-        # ModuleList instead of Sequential so we can pass t_emb explicitly.
-        self.bottleneck_in  = nn.ModuleList(
-            [NAFBlock(ch, time_emb_dim=time_dim) for _ in range(2)]
-        )
-        self.bottleneck_mamba = BidirectionalMamba(ch, d_state=mamba_d_state)
-        self.bottleneck_out = nn.ModuleList(
-            [NAFBlock(ch, time_emb_dim=time_dim) for _ in range(2)]
-        )
-
-        # --- Decoder ---
-        self.decoder_blocks  = nn.ModuleList()
-        self.ups             = nn.ModuleList()
-        self.skip_projs      = nn.ModuleList()   # 1×1 conv: (ch + skip_ch) → ch
-        self.sar_fusions_dec = nn.ModuleList()
-
-        for mult, skip_ch in zip(reversed(channel_multipliers), reversed(enc_channels)):
-            self.ups.append(UpSample(ch))
-            ch = ch // 2          # UpSample halves channels
-            in_ch_dec = ch + skip_ch
-
-            # Project concatenated skip+up tensor back to ch channels.
-            self.skip_projs.append(nn.Conv2d(in_ch_dec, ch, 1, bias=False))
-
-            blocks = nn.ModuleList(
-                [NAFBlock(ch, drop_out=dropout, time_emb_dim=time_dim)
-                 for _ in range(num_res_blocks)]
+        for i in range(N):
+            self.enc_blocks.append(
+                nn.ModuleList([
+                    NAFBlock(channels[i], drop_out=dropout, time_emb_dim=time_emb_dim)
+                    for _ in range(num_nafblocks[i])
+                ])
             )
-            self.decoder_blocks.append(blocks)
+            self.enc_sfblocks.append(
+                SARFusionBlock(
+                    d_optical  = channels[i],
+                    d_sar      = channels[i],
+                    num_heads  = num_heads_sfblock[i],
+                )
+            )
+            if i < N - 1:
+                self.enc_downs.append(DownSample(channels[i]))
 
-            if current_res in attn_resolutions:
-                self.sar_fusions_dec.append(SARFusionBlock(ch, cond_channels))
-            else:
-                self.sar_fusions_dec.append(nn.Identity())
+        # ----------------------------------------------------------------
+        # Bottleneck: global context via VimBlocks + local via NAFBlock
+        # Operates at the deepest scale  (H/2^(N-1) × W/2^(N-1)).
+        # ----------------------------------------------------------------
+        mid_ch = channels[-1]
+        self.vim_blocks  = nn.ModuleList([
+            VimBlock(dim=mid_ch, d_state=vim_d_state)
+            for _ in range(num_vim_blocks)
+        ])
+        self.middle_naf = NAFBlock(mid_ch, time_emb_dim=time_emb_dim)
 
-            current_res *= 2
+        # ----------------------------------------------------------------
+        # Decoder  —  4 levels, processed from deepest (i=N-1) to shallowest (i=0)
+        #
+        # j=0  (i=N-1):  cat(middle_out, skip_{N-1})  —  no upsample
+        # j=1  (i=N-2):  UpSample  then  cat(up, skip_{N-2})
+        # j=2  (i=N-3):  UpSample  then  cat(up, skip_{N-3})
+        # j=3  (i=0  ):  UpSample  then  cat(up, skip_0)
+        #
+        # After each cat: skip_proj reduces  2·channels[i] → channels[i].
+        # dec_ups[k] = UpSample used before decoder step j=k+1 (k = 0 … N-2).
+        # ----------------------------------------------------------------
+        self.dec_blocks     = nn.ModuleList()
+        self.dec_skip_projs = nn.ModuleList()
+        self.dec_ups        = nn.ModuleList()
 
-        # --- Output ---
-        self.out_norm = nn.GroupNorm(32, ch)
-        self.out_conv = nn.Conv2d(ch, in_channels, 3, padding=1)
+        for j, i in enumerate(range(N - 1, -1, -1)):
+            ch = channels[i]
+
+            # UpSample for every level except the deepest (j=0)
+            if j > 0:
+                # channels[i+1] is the channel count coming from the deeper level
+                self.dec_ups.append(UpSample(channels[i + 1]))
+
+            # 1×1 conv that folds the skip connection back to ch channels
+            self.dec_skip_projs.append(nn.Conv2d(2 * ch, ch, 1, bias=False))
+
+            self.dec_blocks.append(
+                nn.ModuleList([
+                    NAFBlock(ch, drop_out=dropout, time_emb_dim=time_emb_dim)
+                    for _ in range(num_dec_nafblocks[i])
+                ])
+            )
+
+        # ----------------------------------------------------------------
+        # Output projection
+        # ----------------------------------------------------------------
+        self.output_proj = nn.Conv2d(channels[0], in_channels_optical, 1, bias=True)
 
     # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
 
-    def _mamba_forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        tokens = x.permute(0, 2, 3, 1).reshape(B, H * W, C)
-        tokens = self.bottleneck_mamba(tokens)
-        return tokens.reshape(B, H, W, C).permute(0, 3, 1, 2)
+    @staticmethod
+    def _align(src: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
+        """Bilinear-resize src to match ref's H×W when they differ by 1 px."""
+        if src.shape[2:] != ref.shape[2:]:
+            src = F.interpolate(src, size=ref.shape[2:],
+                                mode="bilinear", align_corners=False)
+        return src
+
+    # ------------------------------------------------------------------
+    # Forward
+    # ------------------------------------------------------------------
 
     def forward(
         self,
-        z_t: torch.Tensor,
-        t: torch.Tensor,
-        sar_feat: Optional[torch.Tensor] = None,
+        x_t:           torch.Tensor,
+        t:             torch.Tensor,
+        x_cloudy_mean: torch.Tensor,
+        sar:           torch.Tensor,
+        cloud_mask:    Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """Predict velocity v(z_t, t, sar_feat).
+        """Predict clean image x_0 from noised state x_t.
 
         Args:
-            z_t:       Noised latent (B, in_channels, H, W).
-            t:         Timestep values in [0, 1], shape (B,).
-            sar_feat:  SAR feature map (B, cond_channels, H', W') or None.
+            x_t:           Noisy / intermediate diffusion state (B, C_opt, H, W).
+            t:             Diffusion timestep  (B,), values in [0, 1].
+            x_cloudy_mean: Mean of cloudy observations  (B, C_opt, H, W).
+            sar:           SAR image  (B, C_sar, H, W).
+            cloud_mask:    Optional cloud binary mask  (B, 1, H, W).
+                           Unused in the forward pass; accepted for API
+                           compatibility with the bridge training loop.
 
         Returns:
-            Velocity estimate (B, in_channels, H, W).
+            Predicted clean image  (B, C_opt, H, W).
         """
-        t_emb = self.time_emb(t)   # (B, time_dim)
+        # Guard: align SAR to optical spatial size if they differ
+        sar = self._align(sar, x_t)
 
-        h = self.init_conv(z_t)
+        t_emb = self.time_emb(t)      # (B, time_emb_dim)
 
-        # --- Encoder ---
-        skips: List[torch.Tensor] = []
-        for blks, down, sar_fuse in zip(
-            self.encoder_blocks, self.downs, self.sar_fusions_enc
-        ):
-            for blk in blks:
+        # ---- SAR encoder ------------------------------------------------
+        s = self.sar_input(sar)
+        sar_feats: List[torch.Tensor] = []
+
+        for i in range(self.num_levels):
+            for blk in self.sar_enc_blocks[i]:
+                s = blk(s)
+            sar_feats.append(s)            # F_sar_i  at scale i
+            if i < self.num_levels - 1:
+                s = self.sar_downs[i](s)
+
+        # ---- Optical encoder --------------------------------------------
+        h = self.opt_input(torch.cat([x_t, x_cloudy_mean, sar], dim=1))
+
+        enc_skips: List[torch.Tensor] = []
+
+        for i in range(self.num_levels):
+            for blk in self.enc_blocks[i]:
                 h = blk(h, t_emb)
-            if sar_feat is not None and isinstance(sar_fuse, SARFusionBlock):
-                h = sar_fuse(h, sar_feat)
-            skips.append(h)
-            h = down(h)
+            # Fuse SAR features (SFBlock aligns spatial size internally)
+            h = self.enc_sfblocks[i](h, sar_feats[i])
+            enc_skips.append(h)            # skip_i  after SAR fusion
+            if i < self.num_levels - 1:
+                h = self.enc_downs[i](h)
 
-        # --- Bottleneck ---
-        for blk in self.bottleneck_in:
-            h = blk(h, t_emb)
-        h = self._mamba_forward(h)
-        for blk in self.bottleneck_out:
-            h = blk(h, t_emb)
+        # ---- Bottleneck -------------------------------------------------
+        for vim in self.vim_blocks:
+            h = vim(h)
+        h = self.middle_naf(h, t_emb)
 
-        # --- Decoder ---
-        for i, (up, skip_proj, blks, sar_fuse) in enumerate(
-            zip(self.ups, self.skip_projs, self.decoder_blocks, self.sar_fusions_dec)
-        ):
-            h = up(h)
-            skip = skips[-(i + 1)]
-            # Align SAR spatial size if padding caused a 1-pixel mismatch
-            if h.shape[2:] != skip.shape[2:]:
-                h = F.interpolate(h, size=skip.shape[2:], mode="bilinear",
-                                  align_corners=False)
-            h = torch.cat([h, skip], dim=1)     # (B, ch + skip_ch, H, W)
-            h = skip_proj(h)                    # (B, ch, H, W)  — channel reduction
-            for blk in blks:
+        # ---- Decoder ----------------------------------------------------
+        #  j iterates from the deepest decoder level to the shallowest.
+        #  dec_ups[k] is used at j = k+1.
+        up_idx = 0
+        for j, i in enumerate(range(self.num_levels - 1, -1, -1)):
+            if j > 0:                               # upsample before all but the first
+                h = self.dec_ups[up_idx](h)
+                up_idx += 1
+
+            skip = enc_skips[i]
+            h    = self._align(h, skip)             # guard 1-px padding mismatches
+            h    = torch.cat([h, skip], dim=1)      # (B, 2·channels[i], ·)
+            h    = self.dec_skip_projs[j](h)        # (B, channels[i], ·)
+            for blk in self.dec_blocks[j]:
                 h = blk(h, t_emb)
-            if sar_feat is not None and isinstance(sar_fuse, SARFusionBlock):
-                h = sar_fuse(h, sar_feat)
 
-        h = self.out_norm(h)
-        h = F.silu(h)
-        return self.out_conv(h)
+        # ---- Output projection ------------------------------------------
+        return self.output_proj(h)                  # (B, C_opt, H, W)
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat alias (previous code imported UNet)
+# ---------------------------------------------------------------------------
+UNet = SAROpticalUNet
+
+
+# ---------------------------------------------------------------------------
+# Smoke-test  (run as  python -m models.backbone.unet)
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    import sys
+
+    torch.manual_seed(0)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    C_opt, C_sar = 4, 2
+    B, H, W     = 2, 128, 128   # use 128 to keep the test fast
+
+    model = SAROpticalUNet(
+        in_channels_optical = C_opt,
+        in_channels_sar     = C_sar,
+        base_channels       = 32,          # smaller width for the test
+        channel_mult        = [1, 2, 4, 8],
+        num_nafblocks       = [1, 1, 1, 4],  # fewer deep blocks for speed
+        num_dec_nafblocks   = [1, 1, 1, 1],
+        num_vim_blocks      = 1,
+        num_heads_sfblock   = [1, 1, 2, 4],
+        time_emb_dim        = 64,
+    ).to(device)
+
+    # Parameter count
+    total   = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\nSAROpticalUNet  (base_ch=32, mult=[1,2,4,8], naf=[1,1,1,4])")
+    print(f"  Total parameters     : {total:,}")
+    print(f"  Trainable parameters : {trainable:,}")
+
+    # Forward pass
+    x_t    = torch.randn(B, C_opt, H, W, device=device)
+    x_cld  = torch.randn(B, C_opt, H, W, device=device)
+    sar    = torch.randn(B, C_sar, H, W, device=device)
+    t      = torch.rand(B, device=device)
+    mask   = torch.randint(0, 2, (B, 1, H, W), device=device).float()
+
+    out = model(x_t, t, x_cld, sar, mask)
+
+    assert out.shape == (B, C_opt, H, W), f"Unexpected output shape: {out.shape}"
+    assert not torch.isnan(out).any(),    "NaN in output!"
+    assert not torch.isinf(out).any(),    "Inf in output!"
+
+    print(f"\n  Input : x_t={tuple(x_t.shape)}  t={tuple(t.shape)}")
+    print(f"  Output: {tuple(out.shape)}")
+    print(f"\n  PASSED  ✓")
+
+    # Confirm time conditioning reaches the output
+    model.eval()
+    with torch.no_grad():
+        out_t0 = model(x_t, torch.zeros(B, device=device), x_cld, sar)
+        out_t1 = model(x_t, torch.ones(B,  device=device), x_cld, sar)
+    assert not torch.allclose(out_t0, out_t1), "t=0 and t=1 give identical outputs — time conditioning may be broken"
+    print(f"  Time conditioning check  PASSED  ✓")
+
+    # Confirm SAR conditioning reaches the output
+    sar_zeros = torch.zeros_like(sar)
+    with torch.no_grad():
+        out_sar  = model(x_t, t, x_cld, sar)
+        out_nosar = model(x_t, t, x_cld, sar_zeros)
+    assert not torch.allclose(out_sar, out_nosar), "SAR input has no effect — SFBlock may be bypassed"
+    print(f"  SAR conditioning check   PASSED  ✓\n")

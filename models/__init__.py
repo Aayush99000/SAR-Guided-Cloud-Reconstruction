@@ -6,7 +6,7 @@ from .bridge.sampler import ODESampler
 from .backbone.nafblock import NAFBlock, NAFNet
 from .backbone.vim_ssm import VimSSM, BidirectionalMamba
 from .backbone.sfblock import SARFusionBlock
-from .backbone.unet import UNet
+from .backbone.unet import SAROpticalUNet, UNet   # UNet is a backward-compat alias
 from .cloud_aware_loss import CloudAwareLoss
 
 __all__ = [
@@ -21,6 +21,7 @@ __all__ = [
     "VimSSM",
     "BidirectionalMamba",
     "SARFusionBlock",
+    "SAROpticalUNet",
     "UNet",
     "CloudAwareLoss",
 ]

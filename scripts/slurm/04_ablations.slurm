@@ -40,7 +40,7 @@
 #SBATCH --error=logs/slurm/ablation_%A_%a.err
 
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="${SLURM_SUBMIT_DIR}"
 cd "${ROOT_DIR}"
 
 mkdir -p logs/slurm

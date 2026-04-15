@@ -40,7 +40,10 @@
 #SBATCH --error=logs/slurm/train_%j.err
 
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# SLURM copies the batch script to its spool dir before running it, so
+# BASH_SOURCE[0] is wrong.  SLURM_SUBMIT_DIR is always the directory where
+# sbatch was called — use that as the project root.
+ROOT_DIR="${SLURM_SUBMIT_DIR}"
 cd "${ROOT_DIR}"
 
 mkdir -p logs/slurm
@@ -54,7 +57,7 @@ TOTAL_EPOCHS=100                        # must match training.num_epochs in conf
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
 CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge"
 LAST_CKPT="${CKPT_DIR}/latest.ckpt"    # train_bridge.py writes latest.ckpt every epoch
-THIS_SCRIPT="$(realpath "${BASH_SOURCE[0]}")"
+THIS_SCRIPT="${ROOT_DIR}/scripts/slurm/02_train_bridge.slurm"  # BASH_SOURCE[0] is the spool copy
 
 # GPU/cluster tuning
 NUM_WORKERS=8

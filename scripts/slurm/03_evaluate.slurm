@@ -30,7 +30,7 @@
 #SBATCH --error=logs/slurm/eval_%j.err
 
 set -euo pipefail
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+ROOT_DIR="${SLURM_SUBMIT_DIR}"
 cd "${ROOT_DIR}"
 
 mkdir -p logs/slurm

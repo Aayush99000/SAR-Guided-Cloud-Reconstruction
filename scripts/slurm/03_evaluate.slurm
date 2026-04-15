@@ -37,7 +37,8 @@ mkdir -p logs/slurm
 
 # --- Environment ---------------------------------------------------------
 module purge
-# module load anaconda3/2023.03
+module load anaconda3/2022.05           # check available: module avail anaconda3
+source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate cloud-env
 
 echo "[INFO] Job ID:  ${SLURM_JOB_ID}"

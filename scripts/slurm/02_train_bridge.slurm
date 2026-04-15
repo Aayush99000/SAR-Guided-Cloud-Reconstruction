@@ -63,10 +63,10 @@ NUM_WORKERS=8
 
 # --- Environment -------------------------------------------------------------
 module purge
-# Uncomment the line that matches your cluster:
-# module load anaconda3/2023.09          # Northeastern Discovery
-# module load miniconda3/23.1.0
-conda activate cloud-env                # <-- change to your env name
+module load anaconda3/2022.05           # check available: module avail anaconda3
+# Initialise conda in this non-interactive shell (required for conda activate)
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda activate cloud-env
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "  SAR Bridge Training Session"

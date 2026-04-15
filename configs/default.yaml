@@ -3,46 +3,95 @@
 defaults:
   - paths
 
-# --- Training ---
+# ---------------------------------------------------------------------------
+# Training
+# ---------------------------------------------------------------------------
 training:
-  learning_rate: 1.0e-4
+  learning_rate: 5.0e-5           # AdamW LR
   batch_size: 8
   num_epochs: 100
   seed: 42
   grad_clip: 1.0
-  accumulate_grad_batches: 1
+  accumulate_grad_batches: 1      # set >1 to simulate larger batch sizes
+  num_workers: 4
   val_every_n_epochs: 5
   save_every_n_epochs: 10
-  mixed_precision: true   # bf16
+  mixed_precision: true           # bfloat16 autocast on CUDA (no-op on CPU)
+  ema_decay: 0.9999
+  resume: null                    # path to checkpoint, or null
 
-# --- Optimizer ---
+# ---------------------------------------------------------------------------
+# Optimiser
+# ---------------------------------------------------------------------------
 optimizer:
   name: adamw
   betas: [0.9, 0.999]
-  weight_decay: 1.0e-4
+  weight_decay: 0.01
 
+# ---------------------------------------------------------------------------
+# LR Scheduler  (linear warmup → cosine decay)
+# ---------------------------------------------------------------------------
 scheduler:
-  name: cosine
+  name: cosine_with_warmup
   warmup_steps: 1000
 
-# --- Diffusion Bridge ---
+# ---------------------------------------------------------------------------
+# Diffusion Bridge  (OT-ODE, x₀-prediction)
+# ---------------------------------------------------------------------------
 diffusion:
   diffusion_steps: 1000
-  alpha_schedule_type: sine   # "sine" | "linear" | "cosine"
-  beta_min: 1.0e-4
-  beta_max: 0.02
-  ot_reg: 0.01               # OT regularisation weight
-  sampler_nfe: 5             # number of function evaluations at inference
+  alpha_schedule_type: cosine     # "cosine" (DB-CR default) | "sine" | "linear"
+  sampler_nfe: 5                  # inference NFE; see DiffusionBridge.get_nfe_options()
+  t_low: 0.02                     # min training timestep (avoids t≈0 instability)
+  t_high: 1.0                     # max training timestep
 
-# --- Loss weights ---
+# ---------------------------------------------------------------------------
+# Loss  (CloudAwareLoss)
+# ---------------------------------------------------------------------------
 loss:
-  cloud_loss_alpha: 0.8      # weight on cloud-masked region loss
-  lambda_mse: 1.0
+  alpha: 0.8                      # cloud pixel weight; clear pixels get (1 - alpha)
+  lambda_mse: 0.5
   lambda_ssim: 0.5
-  lambda_perceptual: 0.1
-  lambda_adversarial: 0.05
 
-# --- VQ-GAN ---
+# ---------------------------------------------------------------------------
+# Model  (SAROpticalUNet — pixel-space backbone)
+# ---------------------------------------------------------------------------
+model:
+  in_channels_optical: 4          # matches data.optical_bands length
+  base_channels: 64
+  channel_mult: [1, 2, 4, 8]      # → channels [64, 128, 256, 512]
+  num_nafblocks: [1, 1, 1, 28]    # DB-CR design: heavy at deepest encoder level
+  num_dec_nafblocks: [1, 1, 1, 1]
+  num_vim_blocks: 2               # VimBlocks in the bottleneck
+  time_emb_dim: 256
+  dropout: 0.1
+  vim_d_state: 16
+
+# ---------------------------------------------------------------------------
+# Data  (SEN12MS-CR)
+# ---------------------------------------------------------------------------
+data:
+  patch_size: 256
+  optical_bands: [1, 2, 3, 7]    # Sentinel-2 0-indexed: B2(Blue) B3(Green) B4(Red) B8(NIR)
+  sar_bands: 2                    # Sentinel-1 VV + VH
+  min_cloud_coverage: 0.05        # skip near-clear patches
+  max_cloud_coverage: 1.0
+  cloud_threshold: 0.2            # brightness threshold for on-the-fly mask generation
+  dilate_mask: 3                  # morphological dilation of cloud mask (pixels)
+  augmentation: true
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+logging:
+  project: sar_cloud_recon
+  log_every_n_steps: 50
+  use_wandb: false                # set true to enable W&B (requires `pip install wandb`)
+  val_log_images: 4               # number of sample triplets logged to W&B per val run
+
+# ---------------------------------------------------------------------------
+# VQ-GAN  (unused in pixel-space mode; kept for optional latent-space experiments)
+# ---------------------------------------------------------------------------
 vqgan:
   latent_dim: 256
   num_embeddings: 8192
@@ -51,48 +100,3 @@ vqgan:
   encoder_channels: [64, 128, 256, 512]
   decoder_channels: [512, 256, 128, 64]
   num_res_blocks: 2
-
-# --- U-Net backbone ---
-unet:
-  base_channels: 64
-  channel_multipliers: [1, 2, 4, 8]
-  num_res_blocks: 2
-  attention_resolutions: [16, 8]
-  dropout: 0.1
-
-# --- NAFNet ---
-nafnet:
-  width: 32
-  enc_blks: [2, 2, 4, 8]
-  dec_blks: [2, 2, 2, 2]
-  middle_blk_num: 12
-
-# --- Vision Mamba SSM ---
-vim:
-  d_model: 256
-  d_state: 16
-  d_conv: 4
-  expand: 2
-  bidirectional: true
-
-# --- SAR Fusion Block ---
-sar_fusion:
-  num_heads: 8
-  dropout: 0.0
-  ffn_expansion: 4
-
-# --- Data ---
-data:
-  patch_size: 256
-  num_bands: 13             # Sentinel-2 bands
-  sar_bands: 2              # Sentinel-1 VV+VH
-  overlap: 32
-  cloud_threshold: 0.2      # fraction of pixels to consider "cloudy"
-  augmentation: true
-
-# --- Logging ---
-logging:
-  project: sar_cloud_recon
-  log_every_n_steps: 50
-  use_wandb: false
-  use_tensorboard: true

@@ -697,6 +697,10 @@ def _parse_args() -> Tuple[argparse.Namespace, List[str]]:
         "--batch-size", type=int, default=None, metavar="N",
         help="Override batch size from config",
     )
+    parser.add_argument(
+        "--config", default=None, metavar="YAML",
+        help="Extra YAML to merge on top of default.yaml (e.g. an ablation config)",
+    )
     args, overrides = parser.parse_known_args()
     return args, overrides
 
@@ -722,6 +726,11 @@ def main() -> None:
     paths_cfg = config_path.parent / "paths.yaml"
     if paths_cfg.exists():
         cfg = OmegaConf.merge(cfg, OmegaConf.load(paths_cfg))
+    if args.config:
+        extra = Path(args.config)
+        if not extra.exists():
+            raise FileNotFoundError(f"--config file not found: {extra}")
+        cfg = OmegaConf.merge(cfg, OmegaConf.load(extra))
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
 

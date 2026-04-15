@@ -116,6 +116,54 @@ class UpSample(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# Bottleneck alternatives  (for ablation studies)
+# ---------------------------------------------------------------------------
+
+class BottleneckAttention(nn.Module):
+    """Vanilla multi-head self-attention bottleneck (ablation baseline).
+
+    Replaces VimSSM for the backbone ablation study:
+        (b) NAFBlock + Self-Attention  →  ``bottleneck_type="attention"``
+
+    Architecture: Pre-LN MHSA + Pre-LN FFN (GELU), both with residual connections.
+    The spatial tokens are processed as a flattened sequence (B, H·W, C) then
+    reshaped back to (B, C, H, W).  Complexity is O(H²W²) vs O(HW) for Mamba,
+    which is why the SSM variant scales better to 256×256 patches.
+
+    Args:
+        channels:  Feature channels (must be divisible by num_heads).
+        num_heads: Number of attention heads.  Default 8.
+        dropout:   Dropout applied to attention weights and FFN activations.
+    """
+
+    def __init__(self, channels: int, num_heads: int = 8, dropout: float = 0.0) -> None:
+        super().__init__()
+        self.norm1 = nn.LayerNorm(channels)
+        self.attn  = nn.MultiheadAttention(
+            channels, num_heads, dropout=dropout, batch_first=True,
+        )
+        self.norm2 = nn.LayerNorm(channels)
+        self.ffn   = nn.Sequential(
+            nn.Linear(channels, channels * 4),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(channels * 4, channels),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor, time_emb=None) -> torch.Tensor:
+        B, C, H, W = x.shape
+        tokens = x.flatten(2).transpose(1, 2)           # (B, H·W, C)
+        # Pre-norm self-attention with residual
+        normed = self.norm1(tokens)
+        attn_out, _ = self.attn(normed, normed, normed)
+        tokens = tokens + attn_out
+        # Pre-norm FFN with residual
+        tokens = tokens + self.ffn(self.norm2(tokens))
+        return tokens.transpose(1, 2).reshape(B, C, H, W)
+
+
+# ---------------------------------------------------------------------------
 # Main model
 # ---------------------------------------------------------------------------
 
@@ -150,6 +198,8 @@ class SAROpticalUNet(nn.Module):
         time_emb_dim:        int       = 256,
         dropout:             float     = 0.0,
         vim_d_state:         int       = 16,
+        bottleneck_type:     str       = "vim",
+        fusion_mode:         str       = "sfblock",
     ) -> None:
         super().__init__()
 
@@ -158,6 +208,17 @@ class SAROpticalUNet(nn.Module):
         num_nafblocks     = num_nafblocks     or [1, 1, 1, 28]
         num_dec_nafblocks = num_dec_nafblocks or [1, 1, 1, 1]
         num_heads_sfblock = num_heads_sfblock or [1, 1, 2, 4]
+
+        if bottleneck_type not in ("vim", "attention", "none"):
+            raise ValueError(
+                f"bottleneck_type must be 'vim', 'attention', or 'none'; got {bottleneck_type!r}"
+            )
+        if fusion_mode not in ("sfblock", "early_concat", "none"):
+            raise ValueError(
+                f"fusion_mode must be 'sfblock', 'early_concat', or 'none'; got {fusion_mode!r}"
+            )
+        self.bottleneck_type = bottleneck_type
+        self.fusion_mode     = fusion_mode
 
         N = len(channel_mult)
         assert len(num_nafblocks)     == N, "num_nafblocks length must match channel_mult"
@@ -195,10 +256,16 @@ class SAROpticalUNet(nn.Module):
         # ----------------------------------------------------------------
         # Optical encoder  —  NAFBlocks + SFBlock at each level
         #
-        # Input: cat(x_t, x_cloudy_mean, sar_raw)  —  avoids SAR re-extraction.
+        # Input: cat(x_t, x_cloudy_mean [, sar_raw])
+        #   fusion_mode="sfblock"/"early_concat": SAR concatenated to input
+        #   fusion_mode="none":                   optical-only input
         # ----------------------------------------------------------------
-        in_ch_combined = 2 * in_channels_optical + in_channels_sar
-        self.opt_input = nn.Conv2d(in_ch_combined, channels[0], 1, bias=False)
+        opt_in_ch = (
+            2 * in_channels_optical + in_channels_sar
+            if fusion_mode != "none"
+            else 2 * in_channels_optical
+        )
+        self.opt_input = nn.Conv2d(opt_in_ch, channels[0], 1, bias=False)
 
         self.enc_blocks   = nn.ModuleList()
         self.enc_sfblocks = nn.ModuleList()
@@ -211,25 +278,46 @@ class SAROpticalUNet(nn.Module):
                     for _ in range(num_nafblocks[i])
                 ])
             )
-            self.enc_sfblocks.append(
-                SARFusionBlock(
-                    d_optical  = channels[i],
-                    d_sar      = channels[i],
-                    num_heads  = num_heads_sfblock[i],
+            # SFBlock only used in sfblock fusion mode; identity otherwise
+            if fusion_mode == "sfblock":
+                self.enc_sfblocks.append(
+                    SARFusionBlock(
+                        d_optical = channels[i],
+                        d_sar     = channels[i],
+                        num_heads = num_heads_sfblock[i],
+                    )
                 )
-            )
+            else:
+                self.enc_sfblocks.append(nn.Identity())
             if i < N - 1:
                 self.enc_downs.append(DownSample(channels[i]))
 
         # ----------------------------------------------------------------
-        # Bottleneck: global context via VimBlocks + local via NAFBlock
+        # Bottleneck: global context block + local NAFBlock
         # Operates at the deepest scale  (H/2^(N-1) × W/2^(N-1)).
+        #
+        # bottleneck_type="vim"       — VimBlock SSM (default, DB-CR design)
+        # bottleneck_type="attention" — Multi-head self-attention (ablation b)
+        # bottleneck_type="none"      — NAFBlock only, no global-context block (ablation c)
         # ----------------------------------------------------------------
         mid_ch = channels[-1]
-        self.vim_blocks  = nn.ModuleList([
-            VimBlock(dim=mid_ch, d_state=vim_d_state)
-            for _ in range(num_vim_blocks)
-        ])
+        n_blks  = max(num_vim_blocks, 1) if bottleneck_type != "none" else 0
+
+        if bottleneck_type == "vim":
+            self.bottleneck_blocks = nn.ModuleList([
+                VimBlock(dim=mid_ch, d_state=vim_d_state)
+                for _ in range(n_blks)
+            ])
+        elif bottleneck_type == "attention":
+            # num_heads must divide mid_ch; clamp to a safe value
+            n_heads = min(8, mid_ch // 64) or 1
+            self.bottleneck_blocks = nn.ModuleList([
+                BottleneckAttention(mid_ch, num_heads=n_heads, dropout=dropout)
+                for _ in range(n_blks)
+            ])
+        else:   # "none"
+            self.bottleneck_blocks = nn.ModuleList()
+
         self.middle_naf = NAFBlock(mid_ch, time_emb_dim=time_emb_dim)
 
         # ----------------------------------------------------------------
@@ -308,39 +396,45 @@ class SAROpticalUNet(nn.Module):
         Returns:
             Predicted clean image  (B, C_opt, H, W).
         """
-        # Guard: align SAR to optical spatial size if they differ
-        sar = self._align(sar, x_t)
-
         t_emb = self.time_emb(t)      # (B, time_emb_dim)
 
         # ---- SAR encoder ------------------------------------------------
-        s = self.sar_input(sar)
+        # Only run when SFBlock fusion is active; other modes ignore sar_feats.
         sar_feats: List[torch.Tensor] = []
-
-        for i in range(self.num_levels):
-            for blk in self.sar_enc_blocks[i]:
-                s = blk(s)
-            sar_feats.append(s)            # F_sar_i  at scale i
-            if i < self.num_levels - 1:
-                s = self.sar_downs[i](s)
+        if self.fusion_mode == "sfblock":
+            sar_aligned = self._align(sar, x_t)
+            s = self.sar_input(sar_aligned)
+            for i in range(self.num_levels):
+                for blk in self.sar_enc_blocks[i]:
+                    s = blk(s)
+                sar_feats.append(s)            # F_sar_i  at scale i
+                if i < self.num_levels - 1:
+                    s = self.sar_downs[i](s)
 
         # ---- Optical encoder --------------------------------------------
-        h = self.opt_input(torch.cat([x_t, x_cloudy_mean, sar], dim=1))
+        # fusion_mode="none": optical-only input (no SAR channels)
+        # fusion_mode="sfblock"/"early_concat": SAR concatenated to input
+        if self.fusion_mode == "none":
+            h = self.opt_input(torch.cat([x_t, x_cloudy_mean], dim=1))
+        else:
+            sar_aligned = self._align(sar, x_t)
+            h = self.opt_input(torch.cat([x_t, x_cloudy_mean, sar_aligned], dim=1))
 
         enc_skips: List[torch.Tensor] = []
 
         for i in range(self.num_levels):
             for blk in self.enc_blocks[i]:
                 h = blk(h, t_emb)
-            # Fuse SAR features (SFBlock aligns spatial size internally)
-            h = self.enc_sfblocks[i](h, sar_feats[i])
-            enc_skips.append(h)            # skip_i  after SAR fusion
+            # SFBlock fuses SAR encoder features; identity for other modes
+            if self.fusion_mode == "sfblock":
+                h = self.enc_sfblocks[i](h, sar_feats[i])
+            enc_skips.append(h)            # skip_i  after optional SAR fusion
             if i < self.num_levels - 1:
                 h = self.enc_downs[i](h)
 
         # ---- Bottleneck -------------------------------------------------
-        for vim in self.vim_blocks:
-            h = vim(h)
+        for blk in self.bottleneck_blocks:
+            h = blk(h)
         h = self.middle_naf(h, t_emb)
 
         # ---- Decoder ----------------------------------------------------

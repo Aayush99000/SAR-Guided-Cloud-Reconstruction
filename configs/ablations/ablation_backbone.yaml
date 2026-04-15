@@ -1,0 +1,51 @@
+# =============================================================================
+# Ablation Study: Backbone Architecture
+# =============================================================================
+#
+# Research question:
+#   Does the VimSSM (Mamba) bottleneck improve over standard self-attention or
+#   a pure NAFBlock baseline?  This isolates the bottleneck contribution while
+#   keeping everything else constant (same data, loss, schedule, NFE).
+#
+# Variants (run via scripts/run_ablations.sh):
+#
+#   (a) NAFBlock encoder + VimSSM bottleneck  [OURS — default.yaml]
+#         model.bottleneck_type: vim
+#         model.num_vim_blocks: 2
+#         Expected: best PSNR; O(HW) complexity scales to 256×256
+#
+#   (b) NAFBlock encoder + Self-Attention bottleneck  [DB-CR-style]
+#         model.bottleneck_type: attention
+#         model.num_vim_blocks: 2        ← reused as num attention blocks
+#         Expected: similar quality, higher memory; O(H²W²) attention
+#
+#   (c) NAFBlock encoder + NAFBlock bottleneck only  [no global context]
+#         model.bottleneck_type: none
+#         model.num_vim_blocks: 0
+#         Expected: lower quality; shows contribution of global context
+#
+# Key metric to watch: PSNR on the 60-80% cloud-coverage stratum, where
+# long-range context matters most for plausible hallucination.
+#
+# Usage:
+#   See scripts/run_ablations.sh  (ablation_backbone section)
+# =============================================================================
+
+# --- Shared training settings for this ablation ---
+# Use same seed for all variants to ensure comparable initialisation.
+# 50 epochs is enough for convergence curves; re-run at 100 for camera-ready.
+training:
+  num_epochs: 50
+  seed: 100                      # different from default (42) for independent draws
+
+# --- Logging: group all backbone variants under one W&B project ---
+logging:
+  project: sar_ablation_backbone
+  use_wandb: true
+
+# --- Variant (a) is the default; no overrides needed from default.yaml ---
+# The shell script applies dotlist overrides for variants (b) and (c).
+# This file itself represents the shared base for all three runs.
+model:
+  bottleneck_type: vim           # variant (a) — override to "attention"/"none" in shell
+  num_vim_blocks: 2

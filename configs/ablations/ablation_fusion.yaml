@@ -1,0 +1,50 @@
+# =============================================================================
+# Ablation Study: SAR Fusion Strategy
+# =============================================================================
+#
+# Research question:
+#   How much does each component of our SAR integration contribute?
+#   The full model fuses SAR in two places:
+#     (i)  Early: SAR raw channels concatenated to the optical input tensor
+#     (ii) Deep:  SARFusionBlock (O(C²) cross-modal channel attention) at every
+#          encoder level, using features from the parallel SAR encoder branch
+#
+# Variants:
+#
+#   (a) SFBlock cross-attention  [OURS — full dual-branch]
+#         model.fusion_mode: sfblock
+#         Input: cat(x_t, x_cloudy, sar) → opt_input
+#         Encoder: SARFusionBlock at each level using F_sar features
+#         Expected: best performance; deep multi-scale SAR guidance
+#
+#   (b) Early concatenation only  [simplified single-path]
+#         model.fusion_mode: early_concat
+#         Input: cat(x_t, x_cloudy, sar) → opt_input          [same as (a)]
+#         Encoder: SFBlocks replaced by Identity               [no deep fusion]
+#         SAR encoder still exists but its features are unused
+#         Expected: degraded on high-coverage stratum; lacks scale-aware fusion
+#
+#   (c) No SAR conditioning  [optical-only baseline]
+#         model.fusion_mode: none
+#         Input: cat(x_t, x_cloudy) → opt_input               [no SAR channels]
+#         Encoder: no SFBlocks, no SAR encoder features
+#         Expected: lowest scores; shows the absolute value of SAR guidance
+#
+# Key metric: SAM (spectral angle) — SAR carries structural cues that help
+# preserve the spectral shape of reconstructed vegetation/urban pixels.
+#
+# Note: variant (b) has the SAME model size as (a) — unused SAR encoder
+# parameters receive no gradients.  Variant (c) has fewer input channels.
+# =============================================================================
+
+training:
+  num_epochs: 50
+  seed: 100
+
+logging:
+  project: sar_ablation_fusion
+  use_wandb: true
+
+# Variant (a) is the default; shell script overrides fusion_mode for (b)/(c)
+model:
+  fusion_mode: sfblock           # override to "early_concat"/"none" in shell

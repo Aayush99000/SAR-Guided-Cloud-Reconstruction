@@ -227,6 +227,8 @@ def build_model(cfg, device: torch.device) -> Tuple[DiffusionBridge, EMA]:
         time_emb_dim=cfg.model.time_emb_dim,
         dropout=cfg.model.dropout,
         vim_d_state=cfg.model.vim_d_state,
+        bottleneck_type=cfg.model.get("bottleneck_type", "vim"),
+        fusion_mode=cfg.model.get("fusion_mode", "sfblock"),
     ).to(device)
 
     schedule = BridgeNoiseSchedule(
@@ -646,8 +648,8 @@ def train(cfg) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def _parse_args() -> Tuple[Optional[str], List[str]]:
-    """Split --resume from dotlist overrides; leave the rest for OmegaConf."""
+def _parse_args() -> Tuple[argparse.Namespace, List[str]]:
+    """Split known flags from dotlist overrides; leave the rest for OmegaConf."""
     parser = argparse.ArgumentParser(
         description="Train SAR-guided diffusion bridge",
         add_help=True,
@@ -656,8 +658,12 @@ def _parse_args() -> Tuple[Optional[str], List[str]]:
         "--resume", default=None, metavar="CKPT",
         help="Path to a latest.ckpt / epoch_NNNN.ckpt to resume from",
     )
+    parser.add_argument(
+        "--config", default=None, metavar="YAML",
+        help="Extra YAML to merge on top of default.yaml (e.g. an ablation config)",
+    )
     args, overrides = parser.parse_known_args()
-    return args.resume, overrides
+    return args, overrides
 
 
 def main() -> None:
@@ -670,7 +676,7 @@ def main() -> None:
     if not _OMEGACONF:
         raise SystemExit("omegaconf is required: pip install omegaconf")
 
-    resume_path, overrides = _parse_args()
+    args, overrides = _parse_args()
 
     # --- Load config ---
     config_path = Path(__file__).parent.parent / "configs" / "default.yaml"
@@ -684,13 +690,20 @@ def main() -> None:
     if paths_cfg.exists():
         cfg = OmegaConf.merge(cfg, OmegaConf.load(paths_cfg))
 
+    # Merge extra config (e.g. ablation override file)
+    if args.config:
+        extra = Path(args.config)
+        if not extra.exists():
+            raise FileNotFoundError(f"--config file not found: {extra}")
+        cfg = OmegaConf.merge(cfg, OmegaConf.load(extra))
+
     # Apply CLI dotlist overrides  (e.g.  training.batch_size=4)
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
 
     # --resume takes precedence over config key
-    if resume_path:
-        OmegaConf.update(cfg, "training.resume", resume_path, merge=True)
+    if args.resume:
+        OmegaConf.update(cfg, "training.resume", args.resume, merge=True)
 
     log.info("Effective config:\n%s", OmegaConf.to_yaml(cfg))
     train(cfg)

@@ -1,0 +1,63 @@
+# =============================================================================
+# Ablation Study: Number of Function Evaluations (NFE) at Inference
+# =============================================================================
+#
+# Research question:
+#   How does inference quality degrade as we reduce the ODE integration steps?
+#   This is an EVALUATION-ONLY study — a single trained model is evaluated
+#   at multiple NFE values.  No additional training is required.
+#
+# OT-ODE reverse step (DDIM-style):
+#   x_{t-s} = (1 - r) · x̂₀ + r · x_t    where  r = α_{t-s} / α_t
+#
+#   At NFE=1: single step from t=1 → t=0 (direct prediction from x_cloudy)
+#   At NFE=5: DB-CR default; good quality/speed tradeoff (~0.25 s on A100)
+#
+# NFE values to evaluate:
+#   1   — single-step (near-instant; highest distortion)
+#   3   — minimal multi-step (fast; often close to NFE=5)
+#   5   — DB-CR default (recommended for production)
+#   10  — diminishing returns; ~2× slower than NFE=5 for marginal gain
+#
+# Expected behaviour (from DB-CR paper results on SEN12MS-CR):
+#   NFE  │ PSNR (dB) │ SSIM  │ Latency (A100)
+#   ─────┼───────────┼───────┼───────────────
+#     1  │  ~28-30   │ ~0.88 │  ~0.05 s
+#     3  │  ~31-33   │ ~0.91 │  ~0.15 s
+#     5  │  ~33-35   │ ~0.93 │  ~0.25 s
+#    10  │  ~35-36   │ ~0.94 │  ~0.50 s
+#
+# Usage:
+#   # Train once with default config:
+#   python train/train_bridge.py
+#
+#   # Then evaluate at all NFE values in one command:
+#   python train/evaluate.py \
+#       --config configs/ablations/ablation_nfe.yaml \
+#       --ckpt outputs/checkpoints/bridge/best.ckpt \
+#       --nfe 1 3 5 10 \
+#       --sweep \
+#       --viz-every 50
+#
+#   The evaluate.py --sweep flag produces:
+#     - Per-NFE metric tables (PSNR/SSIM/MAE/SAM)
+#     - Stratified results (0-20%, 20-40%, ..., 80-100% cloud coverage)
+#     - outputs/eval/nfe_sweep.png  (PSNR/SSIM/SAM vs NFE chart)
+#     - outputs/eval/metrics/test_metrics_nfe{N}.csv  for each NFE
+# =============================================================================
+
+# --- Training settings (if training from scratch for this study) ---
+# Identical to default.yaml — the NFE ablation uses the full trained model.
+training:
+  num_epochs: 100
+  seed: 42
+
+# --- Evaluation NFE configuration ---
+# These are the NFE values the evaluation script will sweep over.
+# Passed via --nfe CLI flag; this section documents the intended values.
+diffusion:
+  sampler_nfe: 5                 # default for training-time loss logging
+
+logging:
+  project: sar_ablation_nfe
+  use_wandb: true

@@ -66,6 +66,9 @@ model:
   time_emb_dim: 256
   dropout: 0.1
   vim_d_state: 16
+  # Ablation switches (see configs/ablations/ for study configs)
+  bottleneck_type: vim            # "vim" | "attention" | "none"
+  fusion_mode: sfblock            # "sfblock" | "early_concat" | "none"
 
 # ---------------------------------------------------------------------------
 # Data  (SEN12MS-CR)

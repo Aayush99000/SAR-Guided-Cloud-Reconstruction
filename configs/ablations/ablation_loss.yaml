@@ -1,0 +1,55 @@
+# =============================================================================
+# Ablation Study: Loss Function
+# =============================================================================
+#
+# Research question:
+#   Does cloud-adaptive weighting and the structural SSIM term matter?
+#   Three variants isolate the contribution of each loss design choice.
+#
+# Weight map formula (CloudAwareLoss):
+#   W(x,y) = alpha * M(x,y) + (1 - alpha) * (1 - M(x,y))
+#   With alpha=0.8:  cloud pixels → W=0.80,  clear pixels → W=0.20
+#   With alpha=0.5:  cloud pixels → W=0.50,  clear pixels → W=0.50  [uniform]
+#
+# Variants:
+#
+#   (a) Cloud-aware weighted MSE + SSIM  [OURS]
+#         loss.alpha: 0.8
+#         loss.lambda_mse: 0.5
+#         loss.lambda_ssim: 0.5
+#         Total: mean( W * (0.5·MSE + 0.5·(1−SSIM)) )
+#         Expected: best SSIM metric; structure-aware cloud-region focus
+#
+#   (b) Uniform MSE  [standard pixel-wise L2 baseline]
+#         loss.alpha: 0.5     → W = 0.5 everywhere (uniform weight)
+#         loss.lambda_mse: 1.0
+#         loss.lambda_ssim: 0.0
+#         Total: mean( 0.5 * MSE )  ≡  0.5 * global MSE
+#         Expected: lower SSIM; tends to produce blurry reconstructions;
+#                  shows value of cloud-aware weighting and SSIM term
+#
+#   (c) Cloud-aware MSE only  [weighting without structural term]
+#         loss.alpha: 0.8     → cloud=0.80, clear=0.20
+#         loss.lambda_mse: 1.0
+#         loss.lambda_ssim: 0.0
+#         Total: mean( W * MSE )
+#         Expected: sharper cloud focus than (b) but less structure than (a);
+#                  isolates the SSIM term's contribution from the weighting
+#
+# Key metric: SSIM and perceptual sharpness in cloud-covered regions.
+# =============================================================================
+
+training:
+  num_epochs: 100               # loss ablations benefit from full convergence
+  seed: 100
+
+logging:
+  project: sar_ablation_loss
+  use_wandb: true
+
+# Variant (a): our full loss — only need to set these explicitly for clarity
+# The shell script overrides loss params for variants (b) and (c)
+loss:
+  alpha: 0.8
+  lambda_mse: 0.5
+  lambda_ssim: 0.5

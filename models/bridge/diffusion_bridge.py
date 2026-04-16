@@ -237,7 +237,8 @@ class DiffusionBridge(nn.Module):
         x_clean    = self._pick(batch, self._CLEAN_KEYS)
         x_cloudy   = self._pick(batch, self._CLOUDY_KEYS)
         sar        = self._pick(batch, self._SAR_KEYS)
-        cloud_mask = batch.get("cloud_mask") or batch.get("mask")  # optional
+        _cm = batch.get("cloud_mask")
+        cloud_mask = _cm if _cm is not None else batch.get("mask")  # optional
 
         B = x_clean.shape[0]
 

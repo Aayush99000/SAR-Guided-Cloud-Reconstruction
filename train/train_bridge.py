@@ -143,7 +143,10 @@ class MetricAccumulator:
 
     def update(self, d: Dict[str, float]) -> None:
         for k, v in d.items():
-            self._sums[k]   = self._sums.get(k, 0.0) + float(v)
+            fv = float(v)
+            if not math.isfinite(fv):   # skip NaN/Inf — don't poison the mean
+                continue
+            self._sums[k]   = self._sums.get(k, 0.0) + fv
             self._counts[k] = self._counts.get(k, 0)  + 1
 
     def mean(self) -> Dict[str, float]:
@@ -345,7 +348,10 @@ def train_one_epoch(
     accum      = cfg.training.accumulate_grad_batches
     log_every  = cfg.logging.log_every_n_steps
     use_amp    = cfg.training.mixed_precision and device.type == "cuda"
-    amp_dtype  = torch.bfloat16 if use_amp else torch.float32
+    # bfloat16 has native hardware support on Ampere+ (A100, L40, RTX30/40xx).
+    # V100 (Volta, sm_70) emulates bfloat16 in float32 — use float16 there instead.
+    _cc = torch.cuda.get_device_capability(device) if use_amp else (0, 0)
+    amp_dtype  = torch.bfloat16 if (_cc[0] >= 8) else (torch.float16 if use_amp else torch.float32)
 
     optimizer.zero_grad()
 
@@ -360,6 +366,11 @@ def train_one_epoch(
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             loss, metrics = bridge.training_step(batch)
             loss_scaled   = loss / accum       # gradient accumulation scaling
+
+        if not torch.isfinite(loss):
+            log.warning("[E%03d step %06d] NaN/Inf loss — skipping batch", epoch, global_step)
+            optimizer.zero_grad()
+            continue
 
         scaler.scale(loss_scaled).backward()
 
@@ -419,7 +430,8 @@ def validate(
     Returns mean metrics dict.
     """
     use_amp   = cfg.training.mixed_precision and device.type == "cuda"
-    amp_dtype = torch.bfloat16 if use_amp else torch.float32
+    _cc       = torch.cuda.get_device_capability(device) if use_amp else (0, 0)
+    amp_dtype = torch.bfloat16 if (_cc[0] >= 8) else (torch.float16 if use_amp else torch.float32)
     nfe       = cfg.diffusion.sampler_nfe
     acc       = MetricAccumulator()
     images_logged = False
@@ -541,7 +553,8 @@ def train(cfg) -> None:
     optimizer, scheduler = build_optimizer(cfg, bridge, total_steps)
 
     use_amp = cfg.training.mixed_precision and device.type == "cuda"
-    scaler  = torch.cuda.amp.GradScaler(enabled=use_amp)
+    # GradScaler is only needed for float16; bfloat16 doesn't overflow so skip it
+    scaler  = torch.cuda.amp.GradScaler(enabled=(use_amp and torch.cuda.get_device_capability(device)[0] < 8))
 
     # --- W&B (optional) ---
     wandb_run = None

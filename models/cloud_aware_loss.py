@@ -74,7 +74,9 @@ def _ssim_map(
     C1, C2 = 0.01 ** 2, 0.03 ** 2
 
     num   = (2.0 * mu12 + C1) * (2.0 * sigma12 + C2)
-    denom = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-8
+    # 1e-8 is invisible at bfloat16 precision (~3.5e-6 at this scale).
+    # Use 1e-4 so the guard survives low-precision autocast on Ampere/Hopper.
+    denom = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-4
     return num / denom  # (B, C, H, W)
 
 

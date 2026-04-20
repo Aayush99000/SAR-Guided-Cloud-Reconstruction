@@ -175,13 +175,14 @@ def save_checkpoint(
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "epoch":     epoch,
-            "bridge":    bridge.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(),
-            "scaler":    scaler.state_dict(),
-            "ema":       ema.state_dict(),
-            "metrics":   metrics,
+            "epoch":          epoch,
+            "bridge":         bridge.state_dict(),
+            "optimizer":      optimizer.state_dict(),
+            "scheduler":      scheduler.state_dict(),
+            "scaler":         scaler.state_dict(),
+            "ema":            ema.state_dict(),
+            "metrics":        metrics,
+            "best_val_psnr":  metrics.get("val_psnr", -float("inf")),
         },
         path,
     )
@@ -206,11 +207,12 @@ def load_checkpoint(
     scaler.load_state_dict(ckpt["scaler"])
     ema.load_state_dict(ckpt["ema"])
     start_epoch = int(ckpt["epoch"]) + 1
+    best_val_psnr = float(ckpt.get("best_val_psnr", -float("inf")))
     log.info(
-        "Resumed from %s  (saved at epoch %d → starting epoch %d)",
-        path, ckpt["epoch"], start_epoch,
+        "Resumed from %s  (saved at epoch %d → starting epoch %d, best PSNR so far: %.2f dB)",
+        path, ckpt["epoch"], start_epoch, best_val_psnr,
     )
-    return start_epoch
+    return start_epoch, best_val_psnr
 
 
 # ---------------------------------------------------------------------------
@@ -570,13 +572,14 @@ def train(cfg) -> None:
             log.warning("use_wandb=true but `wandb` is not installed; skipping.")
 
     # --- Resume from checkpoint ---
-    start_epoch  = 1
-    global_step  = 0
-    resume_path  = cfg.training.get("resume")
+    start_epoch   = 1
+    global_step   = 0
+    best_val_psnr = -float("inf")
+    resume_path   = cfg.training.get("resume")
     if resume_path:
         p = Path(resume_path)
         if p.exists():
-            start_epoch = load_checkpoint(
+            start_epoch, best_val_psnr = load_checkpoint(
                 p,
                 bridge=bridge, optimizer=optimizer,
                 scheduler=scheduler, scaler=scaler, ema=ema,
@@ -586,8 +589,7 @@ def train(cfg) -> None:
         else:
             log.warning("Resume checkpoint not found: %s — starting from scratch.", p)
 
-    ckpt_dir     = Path(cfg.paths.bridge_ckpt_dir)
-    best_val_psnr = -float("inf")
+    ckpt_dir = Path(cfg.paths.bridge_ckpt_dir)
 
     log.info(
         "Training | epochs=%d  steps/epoch=%d  total_steps=%d",

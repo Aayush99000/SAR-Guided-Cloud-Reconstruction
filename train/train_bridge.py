@@ -171,18 +171,19 @@ def save_checkpoint(
     scaler: torch.cuda.amp.GradScaler,
     ema: EMA,
     metrics: Dict[str, float],
+    best_val_psnr: float = -float("inf"),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {
-            "epoch":          epoch,
-            "bridge":         bridge.state_dict(),
-            "optimizer":      optimizer.state_dict(),
-            "scheduler":      scheduler.state_dict(),
-            "scaler":         scaler.state_dict(),
-            "ema":            ema.state_dict(),
-            "metrics":        metrics,
-            "best_val_psnr":  metrics.get("val_psnr", -float("inf")),
+            "epoch":         epoch,
+            "bridge":        bridge.state_dict(),
+            "optimizer":     optimizer.state_dict(),
+            "scheduler":     scheduler.state_dict(),
+            "scaler":        scaler.state_dict(),
+            "ema":           ema.state_dict(),
+            "metrics":       metrics,
+            "best_val_psnr": best_val_psnr,
         },
         path,
     )
@@ -631,6 +632,7 @@ def train(cfg) -> None:
                     bridge=bridge, optimizer=optimizer, scheduler=scheduler,
                     scaler=scaler, ema=ema,
                     metrics={**train_metrics, **{f"val_{k}": v for k, v in val_metrics.items()}},
+                    best_val_psnr=best_val_psnr,
                 )
                 log.info("New best PSNR: %.2f dB → saved best.ckpt", best_val_psnr)
 
@@ -642,6 +644,7 @@ def train(cfg) -> None:
                 bridge=bridge, optimizer=optimizer, scheduler=scheduler,
                 scaler=scaler, ema=ema,
                 metrics=train_metrics,
+                best_val_psnr=best_val_psnr,
             )
 
         # --- Always overwrite latest.ckpt (enables seamless resume) ---
@@ -651,6 +654,7 @@ def train(cfg) -> None:
             bridge=bridge, optimizer=optimizer, scheduler=scheduler,
             scaler=scaler, ema=ema,
             metrics=train_metrics,
+            best_val_psnr=best_val_psnr,
         )
 
     if wandb_run is not None:

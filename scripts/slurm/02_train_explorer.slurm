@@ -6,6 +6,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:h200:1
+#SBATCH --exclude=d4052,d4054,d4055
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/slurm/train_%j.out
 #SBATCH --error=logs/slurm/train_%j.err

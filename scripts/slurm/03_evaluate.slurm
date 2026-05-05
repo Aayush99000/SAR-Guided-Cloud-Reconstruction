@@ -63,6 +63,8 @@ PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" python train/evaluate.py \
     --viz-every 50 \
     --out-dir "${OUT_DIR}" \
     training.num_workers=8 \
+    data.multitemporal_sar=false \
+    data.sar_bands=2 \
     "${DATA_ROOT_OVERRIDE}"
 
 echo "[INFO] Done: $(date)"

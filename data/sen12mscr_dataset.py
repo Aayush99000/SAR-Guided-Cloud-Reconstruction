@@ -210,10 +210,17 @@ class SEN12MSCRDataset(Dataset):
         )
 
         # Multi-temporal lookup: patch_key → {season: s1_path}
-        # Built from ALL rows (no cloud-coverage filter) so every season's
-        # SAR is available as conditioning even when that season was filtered out.
+        # Built from ALL splits (train + val + test) so every season's SAR
+        # is available as conditioning regardless of which split a location is in.
         if multitemporal:
-            self._mt_lookup: Dict[str, Dict[str, str]] = self._build_mt_lookup(csv_path)
+            all_csvs = [
+                csv_path.parent / "train.csv",
+                csv_path.parent / "val.csv",
+                csv_path.parent / "test.csv",
+            ]
+            self._mt_lookup: Dict[str, Dict[str, str]] = self._build_mt_lookup(
+                *[p for p in all_csvs if p.exists()]
+            )
             n_full = sum(len(v) == 4 for v in self._mt_lookup.values())
             log.info(
                 "SEN12MSCRDataset | split=%s | %d patches | MT-SAR=ON "
@@ -259,23 +266,25 @@ class SEN12MSCRDataset(Dataset):
         return records
 
     @staticmethod
-    def _build_mt_lookup(csv_path: Path) -> Dict[str, Dict[str, str]]:
-        """Build {patch_key: {season: s1_path}} from ALL rows in the CSV.
+    def _build_mt_lookup(*csv_paths: Path) -> Dict[str, Dict[str, str]]:
+        """Build {patch_key: {season: s1_path}} from all provided CSVs.
 
-        No cloud-coverage filtering — we want every season's SAR available
-        as conditioning regardless of whether that season was cloudy.
+        Reads train + val + test CSVs so every season's SAR is available
+        regardless of which split a location appears in.  No cloud-coverage
+        filtering — SAR is always cloud-penetrating.
         """
         lookup: Dict[str, Dict[str, str]] = {}
-        with open(csv_path, newline="") as f:
-            for row in csv.DictReader(f):
-                season  = row.get("season", "").lower().strip()
-                s1_path = row.get("s1", "").strip()
-                if not season or not s1_path or season not in SEASONS:
-                    continue
-                key = _mt_patch_key(s1_path)
-                if key not in lookup:
-                    lookup[key] = {}
-                lookup[key][season] = s1_path
+        for csv_path in csv_paths:
+            with open(csv_path, newline="") as f:
+                for row in csv.DictReader(f):
+                    season  = row.get("season", "").lower().strip()
+                    s1_path = row.get("s1", "").strip()
+                    if not season or not s1_path or season not in SEASONS:
+                        continue
+                    key = _mt_patch_key(s1_path)
+                    if key not in lookup:
+                        lookup[key] = {}
+                    lookup[key][season] = s1_path
         return lookup
 
     # ------------------------------------------------------------------

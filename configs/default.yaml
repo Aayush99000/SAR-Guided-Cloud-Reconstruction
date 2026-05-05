@@ -76,7 +76,8 @@ model:
 data:
   patch_size: 256
   optical_bands: [1, 2, 3, 7]    # Sentinel-2 0-indexed: B2(Blue) B3(Green) B4(Red) B8(NIR)
-  sar_bands: 2                    # Sentinel-1 VV + VH
+  sar_bands: 8                    # 4 seasons × 2 (VV+VH) = 8 multi-temporal SAR channels
+  multitemporal_sar: true         # stack SAR from spring/summer/fall/winter; false = single-date (2ch)
   min_cloud_coverage: 0.05        # skip near-clear patches
   max_cloud_coverage: 1.0
   cloud_threshold: 0.2            # brightness threshold for on-the-fly mask generation

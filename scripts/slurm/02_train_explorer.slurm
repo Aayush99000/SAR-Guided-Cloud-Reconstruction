@@ -17,11 +17,11 @@ mkdir -p logs/slurm
 
 TOTAL_EPOCHS=100
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
-CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge"
+CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_mt"
 LAST_CKPT="${CKPT_DIR}/latest.ckpt"
 THIS_SCRIPT="${ROOT_DIR}/scripts/slurm/02_train_explorer.slurm"
 NUM_WORKERS=8
-DATA_ROOT_OVERRIDE="paths.output_root=${SCRATCH}/outputs"
+DATA_ROOT_OVERRIDE="paths.output_root=${SCRATCH}/outputs paths.bridge_ckpt_dir=${CKPT_DIR}"
 
 module purge
 module load anaconda3/2024.06
@@ -32,7 +32,7 @@ export WANDB_API_KEY="wandb_v1_6VgFsj6uBl7tKAVx4DOLnFNZEMk_WEZbUvDEuFvXhlngk1Zex
 export WANDB_MODE="offline"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  SAR Bridge Training — Explorer H200"
+echo "  SAR Bridge Training (MT-SAR 8ch) — Explorer H200"
 echo "  Job ID : ${SLURM_JOB_ID}"
 echo "  Node   : ${SLURMD_NODENAME}"
 echo "  Start  : $(date)"

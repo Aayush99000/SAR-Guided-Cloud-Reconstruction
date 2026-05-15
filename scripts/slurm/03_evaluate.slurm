@@ -59,7 +59,6 @@ PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" python train/evaluate.py \
     --config configs/default.yaml \
     --ckpt   "${CKPT}" \
     --nfe    1 3 5 10 \
-    --lpips \
     --viz-every 50 \
     --out-dir "${OUT_DIR}" \
     training.num_workers=8 \

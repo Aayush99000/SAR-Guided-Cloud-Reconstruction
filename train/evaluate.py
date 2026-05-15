@@ -242,7 +242,7 @@ def save_comparison_strip(
         ax.axis("off")
 
     if cloud_mask is not None:
-        mask_np = cloud_mask[0].detach().cpu().numpy()
+        mask_np = cloud_mask[0, 0].detach().cpu().numpy()   # (1,H,W) → (H,W)
         axes[-1].imshow(mask_np, cmap="gray", vmin=0, vmax=1)
         axes[-1].set_title("Cloud Mask", fontsize=9, fontweight="bold")
         axes[-1].axis("off")

@@ -17,7 +17,7 @@ mkdir -p logs/slurm
 
 TOTAL_EPOCHS=100
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
-CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_mt"
+CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_mt_v2"
 LAST_CKPT="${CKPT_DIR}/latest.ckpt"
 THIS_SCRIPT="${ROOT_DIR}/scripts/slurm/02_train_explorer.slurm"
 NUM_WORKERS=8

@@ -30,8 +30,8 @@ cd "${ROOT_DIR}"
 mkdir -p logs/slurm
 
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
-CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge/best.ckpt}"
-OUT_DIR="${OUT_DIR:-${SCRATCH}/outputs/eval}"
+CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_mt_v2/best.ckpt}"
+OUT_DIR="${OUT_DIR:-${SCRATCH}/outputs/eval_mt_v2}"
 DATA_ROOT_OVERRIDE="paths.output_root=${SCRATCH}/outputs"
 
 module purge
@@ -62,8 +62,6 @@ PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" python train/evaluate.py \
     --viz-every 50 \
     --out-dir "${OUT_DIR}" \
     training.num_workers=8 \
-    data.multitemporal_sar=false \
-    data.sar_bands=2 \
     "${DATA_ROOT_OVERRIDE}"
 
 echo "[INFO] Done: $(date)"

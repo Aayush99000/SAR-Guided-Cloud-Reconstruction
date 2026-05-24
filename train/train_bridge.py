@@ -394,11 +394,10 @@ def train_one_epoch(
 
         if global_step > 0 and global_step % log_every == 0:
             log.info(
-                "[E%03d step %06d] loss=%.4f  mse=%.4f  ssim=%.4f  lr=%.2e",
+                "[E%03d step %06d] loss=%.4f  l1=%.4f  lr=%.2e",
                 epoch, global_step,
-                metrics.get("total",  float("nan")),
-                metrics.get("mse",    float("nan")),
-                metrics.get("ssim",   float("nan")),
+                metrics.get("total", float("nan")),
+                metrics.get("l1",    float("nan")),
                 metrics["lr"],
             )
             if wandb_run is not None:
@@ -591,10 +590,12 @@ def train(cfg) -> None:
             log.warning("Resume checkpoint not found: %s — starting from scratch.", p)
 
     ckpt_dir = Path(cfg.paths.bridge_ckpt_dir)
+    patience  = int(getattr(cfg.training, "early_stopping_patience", 0))
+    best_epoch = start_epoch - 1
 
     log.info(
-        "Training | epochs=%d  steps/epoch=%d  total_steps=%d",
-        cfg.training.num_epochs, steps_per_epoch, total_steps,
+        "Training | epochs=%d  steps/epoch=%d  total_steps=%d  early_stop_patience=%d",
+        cfg.training.num_epochs, steps_per_epoch, total_steps, patience,
     )
 
     # =====================================================================
@@ -626,6 +627,7 @@ def train(cfg) -> None:
             val_psnr = val_metrics.get("psnr", -float("inf"))
             if val_psnr > best_val_psnr:
                 best_val_psnr = val_psnr
+                best_epoch    = epoch
                 save_checkpoint(
                     ckpt_dir / "best.ckpt",
                     epoch=epoch,
@@ -635,6 +637,21 @@ def train(cfg) -> None:
                     best_val_psnr=best_val_psnr,
                 )
                 log.info("New best PSNR: %.2f dB → saved best.ckpt", best_val_psnr)
+            elif patience > 0 and (epoch - best_epoch) >= patience:
+                log.info(
+                    "Early stopping at epoch %d (no improvement for %d epochs; best was epoch %d, %.2f dB)",
+                    epoch, epoch - best_epoch, best_epoch, best_val_psnr,
+                )
+                # Save final latest before exiting
+                save_checkpoint(
+                    ckpt_dir / "latest.ckpt",
+                    epoch=epoch,
+                    bridge=bridge, optimizer=optimizer, scheduler=scheduler,
+                    scaler=scaler, ema=ema,
+                    metrics=train_metrics,
+                    best_val_psnr=best_val_psnr,
+                )
+                break
 
         # --- Periodic checkpoint ---
         if epoch % cfg.training.save_every_n_epochs == 0:

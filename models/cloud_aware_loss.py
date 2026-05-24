@@ -15,10 +15,8 @@ If cloud_thickness (continuous [0,1]) is supplied, the cloud term becomes
 thickness-weighted so partially-cloudy pixels get proportionally less focus:
     W(x,y) = alpha * thickness(x,y) + (1 − alpha) * (1 − M'(x,y))
 
-Components:
-    L_final = mean( W * (lambda_mse * L_MSE + lambda_ssim * L_SSIM) )
-    L_MSE   = |pred − target|²      (per-pixel)
-    L_SSIM  = 1 − SSIM(pred, target) (per-pixel structural)
+Loss:
+    L = mean( W * |pred − target| )   (cloud-weighted L1)
 """
 
 from __future__ import annotations
@@ -85,27 +83,22 @@ def _ssim_map(
 # ---------------------------------------------------------------------------
 
 class CloudAwareLoss(nn.Module):
-    """Adaptive cloud-weighted multi-component reconstruction loss.
+    """Cloud-weighted L1 reconstruction loss.
 
     Args:
-        alpha:       Weight ratio for cloud vs clear pixels.
-                     cloud → alpha, clear → (1-alpha). Default 0.8.
-        lambda_mse:  Scale factor for the pixel-wise L2 term. Default 0.5.
-        lambda_ssim: Scale factor for the 1-SSIM structural term. Default 0.5.
+        alpha: Weight ratio for cloud vs clear pixels.
+               cloud → alpha, clear → (1-alpha). Default 0.8.
     """
 
     def __init__(
         self,
         alpha: float = 0.8,
-        lambda_mse: float = 0.5,
-        lambda_ssim: float = 0.5,
+        **kwargs,  # absorb deprecated lambda_mse / lambda_ssim from old configs
     ) -> None:
         super().__init__()
         if not 0.0 < alpha < 1.0:
             raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         self.alpha = alpha
-        self.lambda_mse = lambda_mse
-        self.lambda_ssim = lambda_ssim
 
     # ------------------------------------------------------------------
     # Weight map
@@ -179,28 +172,21 @@ class CloudAwareLoss(nn.Module):
         cloud_mask: Optional[torch.Tensor] = None,
         cloud_thickness: Optional[torch.Tensor] = None,
     ) -> tuple[torch.Tensor, dict]:
-        """Compute the cloud-aware loss.
+        """Compute cloud-weighted L1 loss.
 
-        L_final = mean( W * (lambda_mse * L_MSE + lambda_ssim * L_SSIM) )
-
-        Where:
-            L_MSE   = |pred − target|²        (per-pixel)
-            L_SSIM  = 1 − SSIM(pred, target)  (per-pixel structural)
-            W       = compute_weight_map(cloud_mask, cloud_thickness)
+        L = mean( W * |pred − target| )
 
         Args:
             pred:            Reconstructed image (B, C, H, W).
             target:          Ground-truth clear image (B, C, H, W).
             cloud_mask:      Optional binary cloud mask (B, 1, H, W).
-                             If None, uniform weights are used (standard loss).
+                             If None, uniform weights are used.
             cloud_thickness: Optional continuous thickness map (B, 1, H, W).
 
         Returns:
             total_loss: Scalar differentiable loss tensor.
-            loss_dict:  {mse, ssim, mse_weighted, ssim_weighted, total} — floats
-                        detached from the graph, safe to log.
+            loss_dict:  {l1, l1_weighted, total} — floats detached from the graph.
         """
-        # --- Weight map (B, 1, H, W) ---
         if cloud_mask is not None:
             w = self.compute_weight_map(cloud_mask, cloud_thickness)
         else:
@@ -209,31 +195,18 @@ class CloudAwareLoss(nn.Module):
                 device=pred.device, dtype=pred.dtype,
             )
 
-        # --- Per-pixel component maps ---
-        mse_map  = (pred - target) ** 2          # (B, C, H, W)
-        ssim_map = self.ssim_loss(pred, target)   # (B, C, H, W)
+        l1_map = (pred - target).abs()   # (B, C, H, W)
+        total  = (w * l1_map).mean()
 
-        # --- Weighted scalar loss ---
-        combined  = self.lambda_mse * mse_map + self.lambda_ssim * ssim_map
-        total     = (w * combined).mean()
-
-        # --- Logging dict (unweighted scalars included for diagnostics) ---
         loss_dict = {
-            "mse":           mse_map.mean().item(),
-            "ssim":          ssim_map.mean().item(),
-            "mse_weighted":  (w * mse_map).mean().item(),
-            "ssim_weighted": (w * ssim_map).mean().item(),
-            "total":         total.item(),
+            "l1":          l1_map.mean().item(),
+            "l1_weighted": (w * l1_map).mean().item(),
+            "total":       total.item(),
         }
         return total, loss_dict
 
     def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}("
-            f"alpha={self.alpha}, "
-            f"lambda_mse={self.lambda_mse}, "
-            f"lambda_ssim={self.lambda_ssim})"
-        )
+        return f"{self.__class__.__name__}(alpha={self.alpha})"
 
 
 # ---------------------------------------------------------------------------

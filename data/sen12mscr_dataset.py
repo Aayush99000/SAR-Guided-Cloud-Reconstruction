@@ -272,14 +272,24 @@ class SEN12MSCRDataset(Dataset):
         Reads train + val + test CSVs so every season's SAR is available
         regardless of which split a location appears in.  No cloud-coverage
         filtering — SAR is always cloud-penetrating.
+
+        Season is taken from the CSV 'season' column when present; falls back
+        to parsing the season token from the S1 filename stem.
         """
         lookup: Dict[str, Dict[str, str]] = {}
         for csv_path in csv_paths:
             with open(csv_path, newline="") as f:
                 for row in csv.DictReader(f):
-                    season  = row.get("season", "").lower().strip()
                     s1_path = row.get("s1", "").strip()
-                    if not season or not s1_path or season not in SEASONS:
+                    if not s1_path:
+                        continue
+                    season = row.get("season", "").lower().strip()
+                    # Fall back: extract season token from the filename
+                    if not season or season not in SEASONS:
+                        m = _SEASON_S1_RE.search(Path(s1_path).stem)
+                        if m:
+                            season = m.group(1).lower()
+                    if not season or season not in SEASONS:
                         continue
                     key = _mt_patch_key(s1_path)
                     if key not in lookup:
@@ -345,6 +355,11 @@ class SEN12MSCRDataset(Dataset):
             key          = _mt_patch_key(rec["s1"])
             season_paths = self._mt_lookup.get(key, {})
             cur_season   = rec.get("season", "").lower().strip()
+            # Fall back: extract season from filename if CSV column is absent
+            if not cur_season or cur_season not in SEASONS:
+                m = _SEASON_S1_RE.search(Path(rec["s1"]).stem)
+                if m:
+                    cur_season = m.group(1).lower()
 
             bands: List[np.ndarray] = []
             for season in SEASONS:

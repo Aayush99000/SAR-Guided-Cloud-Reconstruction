@@ -21,7 +21,8 @@ CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_mt_v2"
 LAST_CKPT="${CKPT_DIR}/latest.ckpt"
 THIS_SCRIPT="${ROOT_DIR}/scripts/slurm/02_train_explorer.slurm"
 NUM_WORKERS=8
-DATA_ROOT_OVERRIDE="paths.output_root=${SCRATCH}/outputs paths.bridge_ckpt_dir=${CKPT_DIR}"
+DATA_ROOT="${SCRATCH}/Dataset/SEN12MSCR"
+DATA_ROOT_OVERRIDE="paths.data_root=${DATA_ROOT} paths.output_root=${SCRATCH}/outputs paths.bridge_ckpt_dir=${CKPT_DIR}"
 
 module purge
 module load anaconda3/2024.06

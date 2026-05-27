@@ -5,7 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:h200:1
+#SBATCH --gres=gpu:a100:1
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/slurm/train_%j.out
 #SBATCH --error=logs/slurm/train_%j.err
@@ -33,7 +33,7 @@ export WANDB_API_KEY="wandb_v1_6VgFsj6uBl7tKAVx4DOLnFNZEMk_WEZbUvDEuFvXhlngk1Zex
 export WANDB_MODE="offline"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  SAR Bridge Training (MT-SAR 8ch) — Explorer H200"
+echo "  SAR Bridge Training (MT-SAR 8ch) — Explorer A100"
 echo "  Job ID : ${SLURM_JOB_ID}"
 echo "  Node   : ${SLURMD_NODENAME}"
 echo "  Start  : $(date)"

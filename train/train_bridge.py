@@ -205,7 +205,9 @@ def load_checkpoint(
     bridge.load_state_dict(ckpt["bridge"])
     optimizer.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
-    scaler.load_state_dict(ckpt["scaler"])
+    scaler_state = ckpt.get("scaler", {})
+    if scaler_state:  # skip if saved from a disabled (bfloat16) instance
+        scaler.load_state_dict(scaler_state)
     ema.load_state_dict(ckpt["ema"])
     start_epoch = int(ckpt["epoch"]) + 1
     best_val_psnr = float(ckpt.get("best_val_psnr", -float("inf")))
@@ -351,10 +353,12 @@ def train_one_epoch(
     accum      = cfg.training.accumulate_grad_batches
     log_every  = cfg.logging.log_every_n_steps
     use_amp    = cfg.training.mixed_precision and device.type == "cuda"
-    # bfloat16 has native hardware support on Ampere+ (A100, L40, RTX30/40xx).
-    # V100 (Volta, sm_70) emulates bfloat16 in float32 — use float16 there instead.
+    # Only use AMP on Ampere+ (cc>=8, i.e. A100/H100) where bfloat16 is native.
+    # On V100 (cc=7.0) float16 overflows when loading bfloat16-trained checkpoints;
+    # fall back to float32 (no AMP) for correctness.
     _cc = torch.cuda.get_device_capability(device) if use_amp else (0, 0)
-    amp_dtype  = torch.bfloat16 if (_cc[0] >= 8) else (torch.float16 if use_amp else torch.float32)
+    use_amp    = use_amp and (_cc[0] >= 8)
+    amp_dtype  = torch.bfloat16 if use_amp else torch.float32
 
     optimizer.zero_grad()
 
@@ -433,7 +437,8 @@ def validate(
     """
     use_amp   = cfg.training.mixed_precision and device.type == "cuda"
     _cc       = torch.cuda.get_device_capability(device) if use_amp else (0, 0)
-    amp_dtype = torch.bfloat16 if (_cc[0] >= 8) else (torch.float16 if use_amp else torch.float32)
+    use_amp   = use_amp and (_cc[0] >= 8)
+    amp_dtype = torch.bfloat16 if use_amp else torch.float32
     nfe       = cfg.diffusion.sampler_nfe
     acc       = MetricAccumulator()
     images_logged = False
@@ -554,9 +559,10 @@ def train(cfg) -> None:
     bridge, ema = build_model(cfg, device)
     optimizer, scheduler = build_optimizer(cfg, bridge, total_steps)
 
-    use_amp = cfg.training.mixed_precision and device.type == "cuda"
-    # GradScaler is only needed for float16; bfloat16 doesn't overflow so skip it
-    scaler  = torch.cuda.amp.GradScaler(enabled=(use_amp and torch.cuda.get_device_capability(device)[0] < 8))
+    _device_cc = torch.cuda.get_device_capability(device) if (cfg.training.mixed_precision and device.type == "cuda") else (0, 0)
+    use_amp = cfg.training.mixed_precision and device.type == "cuda" and _device_cc[0] >= 8
+    # GradScaler only needed for float16; bfloat16 (Ampere+) and float32 don't need it
+    scaler  = torch.cuda.amp.GradScaler(enabled=False)
 
     # --- W&B (optional) ---
     wandb_run = None

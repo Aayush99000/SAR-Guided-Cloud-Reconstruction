@@ -62,6 +62,7 @@ PYTHONPATH="${ROOT_DIR}:${PYTHONPATH:-}" python train/evaluate.py \
     --nfe    1 3 5 10 \
     --viz-every 50 \
     --out-dir "${OUT_DIR}" \
+    --lpips \
     training.num_workers=8 \
     ${DATA_ROOT_OVERRIDE}
 

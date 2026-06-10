@@ -178,7 +178,7 @@ def _get_lpips_fn(net: str, device: torch.device):
 def lpips_score(
     pred: torch.Tensor,
     target: torch.Tensor,
-    net: str = "vgg",
+    net: str = "alex",
 ) -> float:
     """Learned Perceptual Image Patch Similarity (lower is better).
 

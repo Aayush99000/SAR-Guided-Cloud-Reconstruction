@@ -30,8 +30,8 @@ cd "${ROOT_DIR}"
 mkdir -p logs/slurm
 
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
-CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_mt_v2/best.ckpt}"
-OUT_DIR="${OUT_DIR:-${SCRATCH}/outputs/eval_mt_v2}"
+CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_mt_v3/best.ckpt}"
+OUT_DIR="${OUT_DIR:-${SCRATCH}/outputs/eval_mt_v3}"
 DATA_ROOT="${SCRATCH}/Dataset/SEN12MSCR"
 DATA_ROOT_OVERRIDE="paths.data_root=${DATA_ROOT} paths.output_root=${SCRATCH}/outputs"
 

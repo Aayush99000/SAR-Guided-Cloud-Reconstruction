@@ -218,7 +218,7 @@ def compute_metrics(
     target: torch.Tensor,
     cloud_mask: Optional[torch.Tensor] = None,
     use_lpips: bool = False,
-    lpips_net: str = "vgg",
+    lpips_net: str = "alex",
 ) -> Dict[str, float]:
     """Compute all metrics for a batch; return a flat dict of Python floats.
 
@@ -264,7 +264,7 @@ def per_sample_metrics(
     target: torch.Tensor,
     cloud_mask: Optional[torch.Tensor] = None,
     use_lpips: bool = False,
-    lpips_net: str = "vgg",
+    lpips_net: str = "alex",
 ) -> List[Dict[str, float]]:
     """Compute metrics individually for each image in the batch.
 

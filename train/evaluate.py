@@ -174,13 +174,21 @@ def _to_uint8(
 
 
 def _sar_to_uint8(sar: torch.Tensor) -> np.ndarray:
-    """Convert a (2, H, W) SAR tensor (VV=ch0, VH=ch1) → (H, W, 3) pseudo-colour.
+    """Convert a (2, H, W) or (8, H, W) SAR tensor → (H, W, 3) pseudo-colour.
 
-    False-colour mapping: R=VV, G=mean(VV,VH), B=VH.  Bright areas in VV
-    indicate double-bounce (urban); higher VH indicates volume scattering (veg).
+    For 8-channel MT-SAR, finds the first non-zero channel pair (the active
+    season) since SEN12MS-CR zero-pads the other three seasons.
+    False-colour mapping: R=VV, G=mean(VV,VH), B=VH.
     """
-    vv  = sar[0].detach().cpu().float().numpy()
-    vh  = sar[1].detach().cpu().float().numpy()
+    arr = sar.detach().cpu().float()
+    # Find the active 2-ch pair: first pair where max > 0
+    vv_ch, vh_ch = 0, 1
+    for i in range(0, arr.shape[0] - 1, 2):
+        if arr[i].max() > 0 or arr[i + 1].max() > 0:
+            vv_ch, vh_ch = i, i + 1
+            break
+    vv  = arr[vv_ch].numpy()
+    vh  = arr[vh_ch].numpy()
     avg = (vv + vh) / 2.0
 
     def _stretch(arr: np.ndarray) -> np.ndarray:

@@ -86,19 +86,53 @@ class CloudAwareLoss(nn.Module):
     """Cloud-weighted L1 reconstruction loss.
 
     Args:
-        alpha: Weight ratio for cloud vs clear pixels.
-               cloud → alpha, clear → (1-alpha). Default 0.8.
+        alpha:           Weight ratio for cloud vs clear pixels.
+                         cloud → alpha, clear → (1-alpha). Default 0.8.
+        mask_blur_sigma: Gaussian sigma (pixels) applied to the binary mask
+                         before computing the weight map. Creates a soft
+                         transition zone at cloud boundaries so the model
+                         learns to blend instead of hard-cut. Default 3.0.
+                         Set to 0.0 to disable (hard binary mask).
     """
 
     def __init__(
         self,
         alpha: float = 0.8,
+        mask_blur_sigma: float = 3.0,
         **kwargs,  # absorb deprecated lambda_mse / lambda_ssim from old configs
     ) -> None:
         super().__init__()
         if not 0.0 < alpha < 1.0:
             raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         self.alpha = alpha
+        self.mask_blur_sigma = mask_blur_sigma
+
+        # Pre-build blur kernel (re-built if sigma changes, but sigma is fixed)
+        if mask_blur_sigma > 0.0:
+            self._blur_kernel = self._make_blur_kernel(mask_blur_sigma)
+        else:
+            self._blur_kernel = None
+
+    @staticmethod
+    def _make_blur_kernel(sigma: float, kernel_size: int = 0) -> torch.Tensor:
+        """Build a (1,1,K,K) Gaussian blur kernel for mask softening."""
+        if kernel_size == 0:
+            # Auto: 2*ceil(3*sigma)+1, minimum 3
+            kernel_size = 2 * int(3 * sigma + 0.5) + 1
+            kernel_size = max(kernel_size, 3)
+        coords = torch.arange(kernel_size, dtype=torch.float32) - kernel_size // 2
+        g = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+        g /= g.sum()
+        kernel = (g.unsqueeze(0) * g.unsqueeze(1))  # (K, K)
+        return kernel.unsqueeze(0).unsqueeze(0)      # (1, 1, K, K)
+
+    def _soften_mask(self, mask: torch.Tensor) -> torch.Tensor:
+        """Apply Gaussian blur to a binary mask → soft transition values in [0,1]."""
+        if self._blur_kernel is None:
+            return mask
+        k = self._blur_kernel.to(mask.device, mask.dtype)
+        pad = k.shape[-1] // 2
+        return F.conv2d(mask, k, padding=pad)  # (B, 1, H, W) still in [0,1]
 
     # ------------------------------------------------------------------
     # Weight map
@@ -132,12 +166,17 @@ class CloudAwareLoss(nn.Module):
         Returns:
             Weight map (B, 1, H, W) with values in [0, 1].
         """
+        # Soft mask: blur the binary mask to create a smooth boundary transition.
+        # Deep cloud interior stays ~alpha; deep clear stays ~(1-alpha);
+        # boundary pixels interpolate smoothly between the two.
+        soft_mask = self._soften_mask(cloud_mask)
+
         if cloud_thickness is not None:
             cloud_term = self.alpha * cloud_thickness
         else:
-            cloud_term = self.alpha * cloud_mask
+            cloud_term = self.alpha * soft_mask
 
-        clear_term = (1.0 - self.alpha) * (1.0 - cloud_mask)
+        clear_term = (1.0 - self.alpha) * (1.0 - soft_mask)
         return cloud_term + clear_term   # (B, 1, H, W)
 
     # ------------------------------------------------------------------

@@ -51,6 +51,7 @@ diffusion:
 # ---------------------------------------------------------------------------
 loss:
   alpha: 0.8                      # cloud pixel weight; clear pixels get (1 - alpha)
+  mask_blur_sigma: 3.0            # Gaussian sigma (px) to soften hard mask boundaries; 0 = disabled
   lambda_mse: 0.5
   lambda_ssim: 0.5
 

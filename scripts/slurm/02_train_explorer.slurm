@@ -42,7 +42,12 @@ echo "  Node   : ${SLURMD_NODENAME}"
 echo "  Start  : $(date)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-python -c "import torch; print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')"
+# --- GPU health check: resubmit self if driver is broken ---
+if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
+    echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting on a different node"
+    sbatch "${THIS_SCRIPT}"
+    exit 0
+fi
 
 # --- Check if training is already complete ---
 CURRENT_EPOCH=0

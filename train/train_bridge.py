@@ -247,6 +247,7 @@ def build_model(cfg, device: torch.device) -> Tuple[DiffusionBridge, EMA]:
     criterion = CloudAwareLoss(
         alpha=cfg.loss.alpha,
         mask_blur_sigma=getattr(cfg.loss, "mask_blur_sigma", 3.0),
+        lambda_lpips=getattr(cfg.loss, "lambda_lpips", 0.1),
         lambda_mse=cfg.loss.lambda_mse,
         lambda_ssim=cfg.loss.lambda_ssim,
     )

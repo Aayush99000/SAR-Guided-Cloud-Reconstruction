@@ -83,7 +83,7 @@ def _ssim_map(
 # ---------------------------------------------------------------------------
 
 class CloudAwareLoss(nn.Module):
-    """Cloud-weighted L1 reconstruction loss.
+    """Cloud-weighted reconstruction loss with optional LPIPS perceptual term.
 
     Args:
         alpha:           Weight ratio for cloud vs clear pixels.
@@ -93,12 +93,17 @@ class CloudAwareLoss(nn.Module):
                          transition zone at cloud boundaries so the model
                          learns to blend instead of hard-cut. Default 3.0.
                          Set to 0.0 to disable (hard binary mask).
+        lambda_lpips:    Weight for LPIPS perceptual loss term. Forces the
+                         model to generate realistic texture instead of
+                         blurry mean-regression outputs. Default 0.1.
+                         Set to 0.0 to disable.
     """
 
     def __init__(
         self,
         alpha: float = 0.8,
         mask_blur_sigma: float = 3.0,
+        lambda_lpips: float = 0.1,
         **kwargs,  # absorb deprecated lambda_mse / lambda_ssim from old configs
     ) -> None:
         super().__init__()
@@ -106,12 +111,25 @@ class CloudAwareLoss(nn.Module):
             raise ValueError(f"alpha must be in (0, 1), got {alpha}")
         self.alpha = alpha
         self.mask_blur_sigma = mask_blur_sigma
+        self.lambda_lpips = lambda_lpips
 
         # Pre-build blur kernel (re-built if sigma changes, but sigma is fixed)
         if mask_blur_sigma > 0.0:
             self._blur_kernel = self._make_blur_kernel(mask_blur_sigma)
         else:
             self._blur_kernel = None
+
+        # LPIPS network (lazy-loaded on first forward to avoid GPU alloc at init)
+        self._lpips_fn: Optional[nn.Module] = None
+
+    def _get_lpips(self, device: torch.device) -> nn.Module:
+        """Lazy-load frozen AlexNet LPIPS network onto device."""
+        if self._lpips_fn is None:
+            import lpips as lpips_lib
+            self._lpips_fn = lpips_lib.LPIPS(net="alex").to(device)
+            for p in self._lpips_fn.parameters():
+                p.requires_grad_(False)
+        return self._lpips_fn.to(device)
 
     @staticmethod
     def _make_blur_kernel(sigma: float, kernel_size: int = 0) -> torch.Tensor:
@@ -237,11 +255,23 @@ class CloudAwareLoss(nn.Module):
         l1_map = (pred - target).abs()   # (B, C, H, W)
         total  = (w * l1_map).mean()
 
-        loss_dict = {
+        loss_dict: dict = {
             "l1":          l1_map.mean().item(),
             "l1_weighted": (w * l1_map).mean().item(),
-            "total":       total.item(),
         }
+
+        # LPIPS perceptual loss — forces realistic texture, combats mean-regression
+        if self.lambda_lpips > 0.0:
+            lpips_fn = self._get_lpips(pred.device)
+            # LPIPS expects [-1, 1]; use first 3 channels (B, G, R visible bands)
+            p3 = pred[:, :3].float() * 2.0 - 1.0
+            t3 = target[:, :3].float() * 2.0 - 1.0
+            with torch.cuda.amp.autocast(enabled=False):
+                lpips_val = lpips_fn(p3, t3).mean()
+            total = total + self.lambda_lpips * lpips_val
+            loss_dict["lpips"] = lpips_val.item()
+
+        loss_dict["total"] = total.item()
         return total, loss_dict
 
     def __repr__(self) -> str:

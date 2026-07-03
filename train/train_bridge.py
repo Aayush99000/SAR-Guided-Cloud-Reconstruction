@@ -174,10 +174,13 @@ def save_checkpoint(
     best_val_psnr: float = -float("inf"),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Exclude frozen LPIPS weights — they're re-loaded from AlexNet at runtime
+    bridge_sd = {k: v for k, v in bridge.state_dict().items()
+                 if "_lpips_fn" not in k}
     torch.save(
         {
             "epoch":         epoch,
-            "bridge":        bridge.state_dict(),
+            "bridge":        bridge_sd,
             "optimizer":     optimizer.state_dict(),
             "scheduler":     scheduler.state_dict(),
             "scaler":        scaler.state_dict(),
@@ -202,7 +205,8 @@ def load_checkpoint(
 ) -> int:
     """Load a checkpoint; returns the epoch to resume from (saved_epoch + 1)."""
     ckpt = torch.load(path, map_location=device, weights_only=False)
-    bridge.load_state_dict(ckpt["bridge"])
+    # strict=False: tolerates missing _lpips_fn keys (frozen, re-loaded at runtime)
+    bridge.load_state_dict(ckpt["bridge"], strict=False)
     optimizer.load_state_dict(ckpt["optimizer"])
     scheduler.load_state_dict(ckpt["scheduler"])
     scaler_state = ckpt.get("scaler", {})

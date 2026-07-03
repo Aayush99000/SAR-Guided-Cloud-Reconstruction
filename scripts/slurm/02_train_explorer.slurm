@@ -42,12 +42,10 @@ echo "  Node   : ${SLURMD_NODENAME}"
 echo "  Start  : $(date)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# --- GPU health check: resubmit self if driver is broken ---
+# --- GPU health check: resubmit excluding this node if driver is broken ---
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
-    echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting on a different node"
-    # Use clean env to prevent inherited variables from growing unbounded across resubmits
-    env -i HOME="${HOME}" USER="${USER}" PATH="/usr/bin:/bin:/usr/local/bin" \
-        sbatch "${THIS_SCRIPT}"
+    echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
+    sbatch --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}"
     exit 0
 fi
 

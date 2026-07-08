@@ -42,10 +42,11 @@ echo "  Node   : ${SLURMD_NODENAME}"
 echo "  Start  : $(date)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# --- GPU health check: resubmit excluding this node if driver is broken ---
+# --- GPU health check: resubmit excluding ALL known bad nodes if driver broken ---
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
-    echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
-    sbatch --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}"
+    echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding all bad nodes"
+    # Must list ALL bad nodes here — command-line --exclude overrides #SBATCH --exclude
+    sbatch --exclude="d1026,d1028,${SLURMD_NODENAME}" "${THIS_SCRIPT}"
     exit 0
 fi
 

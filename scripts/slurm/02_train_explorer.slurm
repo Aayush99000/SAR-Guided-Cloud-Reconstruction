@@ -5,8 +5,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:a100:1
-#SBATCH --exclude=d1026,d1028
+#SBATCH --gres=gpu:1
 #SBATCH --time=08:00:00
 #SBATCH --output=logs/slurm/train_%j.out
 #SBATCH --error=logs/slurm/train_%j.err
@@ -27,26 +26,37 @@ DATA_ROOT_OVERRIDE="paths.data_root=${DATA_ROOT} paths.output_root=${SCRATCH}/ou
 
 unset CUDA_VISIBLE_DEVICES CUDA_DEVICE_ORDER
 
+# Redirect torch hub cache to scratch (home dir may lack ~/.cache/torch on some nodes)
+export TORCH_HOME="/scratch/katoch.aa/.cache/torch"
+mkdir -p "${TORCH_HOME}/hub/checkpoints"
+
+# Reduce memory fragmentation on V100 — prevents CUDA OOM mid-epoch
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
 module purge
 module load anaconda3/2024.06
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate cloud-env
 
+# Ensure critical packages present (guards against env activation failures)
+python -c "import omegaconf" 2>/dev/null || pip install omegaconf -q
+python -c "import lpips"     2>/dev/null || pip install lpips -q
+
 export WANDB_API_KEY="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"
 export WANDB_MODE="offline"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  SAR Bridge Training (MT-SAR 8ch) — Explorer A100"
+echo "  SAR Bridge Training (MT-SAR 8ch) — Explorer GPU"
 echo "  Job ID : ${SLURM_JOB_ID}"
 echo "  Node   : ${SLURMD_NODENAME}"
 echo "  Start  : $(date)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-# --- GPU health check: resubmit excluding ALL known bad nodes if driver broken ---
+# --- GPU health check ---
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
-    echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding all bad nodes"
-    # Must list ALL bad nodes here — command-line --exclude overrides #SBATCH --exclude
-    sbatch --exclude="d1026,d1028,${SLURMD_NODENAME}" "${THIS_SCRIPT}"
+    echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
+    # --export=NONE prevents SLURM env var accumulation (avoids "Argument list too long")
+    sbatch --export=NONE --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}"
     exit 0
 fi
 
@@ -68,14 +78,12 @@ echo "[INFO] Current epoch from checkpoint: ${CURRENT_EPOCH} / ${TOTAL_EPOCHS}"
 
 if [[ "${CURRENT_EPOCH}" -ge "${TOTAL_EPOCHS}" ]]; then
     echo "[INFO] Training complete — submitting eval"
-    sbatch "${ROOT_DIR}/scripts/slurm/03_evaluate.slurm" 2>/dev/null || true
+    sbatch --export=NONE "${ROOT_DIR}/scripts/slurm/03_evaluate.slurm" 2>/dev/null || true
     exit 0
 fi
 
-# --- Pre-schedule next session NOW (before training starts) ---
-# This runs regardless of how this job ends (time limit, crash, or success),
-# because it is submitted before Python starts — not after it exits.
-NEXT_JOB=$(sbatch --dependency=afterany:"${SLURM_JOB_ID}" \
+# --- Pre-schedule next session (--export=NONE prevents env var bloat across chain) ---
+NEXT_JOB=$(sbatch --export=NONE --dependency=afterany:"${SLURM_JOB_ID}" \
            "${THIS_SCRIPT}" 2>&1)
 echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
 
@@ -91,13 +99,14 @@ else
     echo "[INFO] Fresh training run"
 fi
 
-# --- Detect GPU and set batch size accordingly ---
+# --- Detect GPU and set batch size ---
 GPU_MEM=$(python -c "import torch; print(torch.cuda.get_device_properties(0).total_memory // (1024**3))" 2>/dev/null || echo 0)
 if [[ "${GPU_MEM}" -ge 60 ]]; then
+    # A100 (80GB) / H200 (141GB)
     BATCH_ARGS="training.batch_size=8 training.accumulate_grad_batches=1"
 else
-    # V100 (32GB) — halve batch, double accumulation to keep effective batch=8
-    BATCH_ARGS="training.batch_size=4 training.accumulate_grad_batches=2"
+    # V100 (32GB) — small batch to avoid OOM; 4x accumulation keeps effective batch=8
+    BATCH_ARGS="training.batch_size=2 training.accumulate_grad_batches=4"
 fi
 echo "[INFO] GPU memory: ${GPU_MEM}GB → ${BATCH_ARGS}"
 

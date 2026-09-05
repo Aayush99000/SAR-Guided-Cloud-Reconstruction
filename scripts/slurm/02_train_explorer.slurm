@@ -10,6 +10,22 @@
 #SBATCH --output=logs/slurm/train_%j.out
 #SBATCH --error=logs/slurm/train_%j.err
 
+# Strip accumulated env vars from parent jobs to prevent "Argument list too long".
+# Clears SLURM_*, SLURMD_*, CONDA_*, PYTHON*, and resets PATH to prevent bloat
+# across long job chains. Keeps the three SLURM vars this script needs.
+_SAVE_JOB_ID="${SLURM_JOB_ID:-}"
+_SAVE_NODE="${SLURMD_NODENAME:-}"
+_SAVE_SUBMITDIR="${SLURM_SUBMIT_DIR:-}"
+while IFS= read -r _v; do unset "$_v" 2>/dev/null || true; done < <(
+    compgen -v | grep -E '^SLURM_|^SLURMD_|^CONDA_|^PYTHON|^_CE_|^__CONDA'
+)
+# Reset PATH to a clean baseline so repeated module/conda activations don't bloat it
+export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+SLURM_JOB_ID="${_SAVE_JOB_ID}"
+SLURMD_NODENAME="${_SAVE_NODE}"
+SLURM_SUBMIT_DIR="${_SAVE_SUBMITDIR}"
+unset _SAVE_JOB_ID _SAVE_NODE _SAVE_SUBMITDIR _v
+
 set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR}"
 cd "${ROOT_DIR}"
@@ -38,9 +54,13 @@ module load anaconda3/2024.06
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate cloud-env
 
-# Ensure critical packages present (guards against env activation failures)
-python -c "import omegaconf" 2>/dev/null || pip install omegaconf -q
-python -c "import lpips"     2>/dev/null || pip install lpips -q
+# Verify conda env activated correctly (compute nodes can't pip install — no internet)
+if ! python -c "import omegaconf, lpips" 2>/dev/null; then
+    echo "[WARN] cloud-env packages missing — retrying activation"
+    conda deactivate 2>/dev/null || true
+    conda activate cloud-env
+    python -c "import omegaconf, lpips" || { echo "[ERROR] cloud-env broken"; exit 1; }
+fi
 
 export WANDB_API_KEY="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"
 export WANDB_MODE="offline"
@@ -55,8 +75,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 # --- GPU health check ---
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
     echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
-    # --export=NONE prevents SLURM env var accumulation (avoids "Argument list too long")
-    sbatch --export=NONE --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}"
+    sbatch --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}"
     exit 0
 fi
 
@@ -78,13 +97,12 @@ echo "[INFO] Current epoch from checkpoint: ${CURRENT_EPOCH} / ${TOTAL_EPOCHS}"
 
 if [[ "${CURRENT_EPOCH}" -ge "${TOTAL_EPOCHS}" ]]; then
     echo "[INFO] Training complete — submitting eval"
-    sbatch --export=NONE "${ROOT_DIR}/scripts/slurm/03_evaluate.slurm" 2>/dev/null || true
+    sbatch "${ROOT_DIR}/scripts/slurm/03_evaluate.slurm" 2>/dev/null || true
     exit 0
 fi
 
-# --- Pre-schedule next session (--export=NONE prevents env var bloat across chain) ---
-NEXT_JOB=$(sbatch --export=NONE --dependency=afterany:"${SLURM_JOB_ID}" \
-           "${THIS_SCRIPT}" 2>&1)
+# --- Pre-schedule next session ---
+NEXT_JOB=$(sbatch --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" 2>&1)
 echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
 
 # --- Resume logic ---

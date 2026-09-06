@@ -48,9 +48,9 @@ mkdir -p "${TORCH_HOME}/hub/checkpoints"
 # Reduce memory fragmentation on V100 — prevents CUDA OOM mid-epoch
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
-module purge
-module load anaconda3/2024.06
-source "$(conda info --base)/etc/profile.d/conda.sh"
+# Source conda directly — module system is unavailable after exec env -i clean relaunch
+CONDA_BASE="/shared/EL9/explorer/anaconda3/2024.06"
+source "${CONDA_BASE}/etc/profile.d/conda.sh"
 conda activate cloud-env
 
 # Verify conda env activated correctly (compute nodes can't pip install — no internet)

@@ -10,21 +10,20 @@
 #SBATCH --output=logs/slurm/train_%j.out
 #SBATCH --error=logs/slurm/train_%j.err
 
-# Strip accumulated env vars from parent jobs to prevent "Argument list too long".
-# Clears SLURM_*, SLURMD_*, CONDA_*, PYTHON*, and resets PATH to prevent bloat
-# across long job chains. Keeps the three SLURM vars this script needs.
-_SAVE_JOB_ID="${SLURM_JOB_ID:-}"
-_SAVE_NODE="${SLURMD_NODENAME:-}"
-_SAVE_SUBMITDIR="${SLURM_SUBMIT_DIR:-}"
-while IFS= read -r _v; do unset "$_v" 2>/dev/null || true; done < <(
-    compgen -v | grep -E '^SLURM_|^SLURMD_|^CONDA_|^PYTHON|^_CE_|^__CONDA'
-)
-# Reset PATH to a clean baseline so repeated module/conda activations don't bloat it
-export PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-SLURM_JOB_ID="${_SAVE_JOB_ID}"
-SLURMD_NODENAME="${_SAVE_NODE}"
-SLURM_SUBMIT_DIR="${_SAVE_SUBMITDIR}"
-unset _SAVE_JOB_ID _SAVE_NODE _SAVE_SUBMITDIR _v
+# Self-relaunch with a completely clean environment on every session start.
+# This is the only reliable fix for "Argument list too long" across long job chains —
+# accumulated SLURM_*, CONDA_*, module, and PATH bloat from 70+ parent jobs.
+if [[ -z "${_CLEAN_ENV:-}" ]]; then
+    exec env -i \
+        HOME="${HOME}" \
+        USER="${USER}" \
+        LOGNAME="${LOGNAME:-${USER}}" \
+        SLURM_JOB_ID="${SLURM_JOB_ID:-}" \
+        SLURMD_NODENAME="${SLURMD_NODENAME:-}" \
+        SLURM_SUBMIT_DIR="${SLURM_SUBMIT_DIR:-}" \
+        _CLEAN_ENV=1 \
+        /bin/bash "$0" "$@"
+fi
 
 set -euo pipefail
 ROOT_DIR="${SLURM_SUBMIT_DIR}"

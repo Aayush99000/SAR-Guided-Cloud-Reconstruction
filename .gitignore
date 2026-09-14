@@ -1,45 +1,27 @@
+# Checkpoints — too large for GitHub (2GB each); stored on cluster and locally
+checkpoints/*.ckpt
+
 # Python
 __pycache__/
-*.py[cod]
+*.pyc
 *.pyo
-*.pyd
 .Python
+
+# Data
+*.tif
+*.tar.gz
+Dataset/
+
+# Logs & outputs
+logs/
+wandb/
+outputs/
+
+# Environment
+.env
 *.egg-info/
 dist/
 build/
-.eggs/
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Outputs / artefacts (large, machine-generated)
-outputs/
-*.ckpt
-*.pt
-*.pth
-*.h5
-
-# Dataset (too large for git)
-/data/SEN12MS-CR/
-*.tif
-*.tiff
-
-# Jupyter
-.ipynb_checkpoints/
-*.ipynb
-
-# IDE
-.vscode/
-.idea/
-*.swp
 
 # OS
 .DS_Store
-Thumbs.db
-
-# Wandb / TensorBoard logs
-wandb/
-runs/
-lightning_logs/

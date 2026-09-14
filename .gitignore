@@ -1,6 +1,3 @@
-# Checkpoints — too large for GitHub (2GB each); stored on cluster and locally
-checkpoints/*.ckpt
-
 # Python
 __pycache__/
 *.pyc

@@ -22,3 +22,6 @@ build/
 
 # OS
 .DS_Store
+
+# Large result outputs (stored on cluster, not in git)
+results/*/samples/

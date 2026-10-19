@@ -33,6 +33,7 @@ OUT_DIR="${SCRATCH}/outputs/eval/v3_lpips"
 
 export TORCH_HOME="/scratch/katoch.aa/.cache/torch"
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
+export PYTHONPATH="${SCRATCH}"
 
 mkdir -p "${SCRATCH}/logs/slurm"
 mkdir -p "${OUT_DIR}"

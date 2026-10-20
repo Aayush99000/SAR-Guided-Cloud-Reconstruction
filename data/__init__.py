@@ -1,4 +1,16 @@
 from .sen12mscr_dataset import SEN12MSCRDataset, collate_fn, S2_RGB_NIR_BANDS
+from .sen12mscrts_dataset import SEN12MSCRTSDataset
+
+
+def build_dataset(cfg, split: str = "train"):
+    """Instantiate the dataset named by ``cfg.data.dataset`` (default sen12mscr)."""
+    name = cfg.data.get("dataset", "sen12mscr")
+    if name == "sen12mscr":
+        return SEN12MSCRDataset.from_config(cfg, split=split)
+    if name == "sen12mscrts":
+        return SEN12MSCRTSDataset.from_config(cfg, split=split)
+    raise ValueError(f"Unknown data.dataset {name!r} (expected 'sen12mscr' or 'sen12mscrts')")
+
 from .preprocessing import (
     # Primary API
     normalize_optical,
@@ -27,6 +39,8 @@ from .cloud_mask import (
 __all__ = [
     # Dataset
     "SEN12MSCRDataset",
+    "SEN12MSCRTSDataset",
+    "build_dataset",
     "collate_fn",
     "S2_RGB_NIR_BANDS",
     # Preprocessing — primary

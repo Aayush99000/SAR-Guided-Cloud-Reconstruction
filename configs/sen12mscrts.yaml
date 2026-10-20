@@ -1,0 +1,28 @@
+# SEN12MS-CR-TS overlay — merge on top of default.yaml:
+#   python train/train_bridge.py --config configs/sen12mscrts.yaml
+#   python train/evaluate.py --config configs/sen12mscrts.yaml --ckpt ...
+
+paths:
+  data_root: /scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction/Dataset/SEN12MSCRTS
+  ts_mask_dir: /scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction/Dataset/SEN12MSCRTS/cloud_masks
+  bridge_ckpt_dir: ${paths.output_root}/checkpoints/bridge_ts_v1
+
+data:
+  dataset: sen12mscrts
+  sar_bands: 6                    # n_input (3) dates × VV/VH
+  multitemporal_sar: false        # SEN12MS-CR season stacking; not used for TS
+  composite_output: false         # clear input pixels are from other dates — never paste them
+  ts:
+    n_input: 3
+    clear_thresh: 1.0e-3
+    exclude_target_from_inputs: true   # false reproduces UnCRtainTS fixed_sampler exactly
+    train_target_policy: random_clear
+    train_input_policy: random
+    train_min_input_cov: 0.1      # train on genuinely cloudy inputs; falls back if too few
+    train_max_input_cov: 1.0
+    eval_target_policy: least_cloudy
+    eval_input_policy: first
+    eval_min_input_cov: 0.0       # eval protocol unchanged (UnCRtainTS defaults)
+    eval_max_input_cov: 1.0
+    val_tiles: null               # null = last tile of each region
+    regions: null                 # null = all five regions

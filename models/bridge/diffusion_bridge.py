@@ -338,6 +338,7 @@ class DiffusionBridge(nn.Module):
         cloud_mask:       Optional[torch.Tensor] = None,
         num_steps:        int  = 5,
         return_trajectory: bool = False,
+        composite:        bool = True,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
         """Full reverse-ODE inference: x_T → x̂₀ with hard-mask compositing.
 
@@ -373,6 +374,9 @@ class DiffusionBridge(nn.Module):
                                See get_nfe_options() for quality guidance.
             return_trajectory: If True, also return the list of all N+1
                                intermediate x_t states (for visualisation).
+            composite:         Apply hard-mask compositing.  Disable when the
+                               clear input pixels come from a different date
+                               than the target (multi-temporal data).
 
         Returns:
             x_final: Reconstructed cloud-free image (B, C, H, W).
@@ -405,7 +409,7 @@ class DiffusionBridge(nn.Module):
 
         # --- Hard-mask compositing -------------------------------------------
         # Preserve originally-clear pixels; fill cloud-covered regions from model
-        if cloud_mask is not None and x_hat_0_final is not None:
+        if composite and cloud_mask is not None and x_hat_0_final is not None:
             x_final = cloud_mask * x_hat_0_final + (1.0 - cloud_mask) * x_cloudy_orig
         else:
             x_final = x_t

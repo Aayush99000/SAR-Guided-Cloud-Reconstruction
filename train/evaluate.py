@@ -53,7 +53,7 @@ try:
 except ImportError:
     _TQDM = False
 
-from data import SEN12MSCRDataset, collate_fn
+from data import build_dataset, collate_fn
 from models import SAROpticalUNet, DiffusionBridge
 from models.bridge.noise_schedule import BridgeNoiseSchedule
 from models.cloud_aware_loss import CloudAwareLoss
@@ -474,6 +474,7 @@ def run_inference(
                 x_cloudy, sar,
                 cloud_mask=cloud_mask,
                 num_steps=nfe,
+                composite=cfg.data.get("composite_output", True),
             )
 
         x_pred_f  = x_pred.float().clamp(0.0, 1.0)
@@ -531,7 +532,7 @@ def evaluate(cfg, args: argparse.Namespace) -> None:
     log.info("Evaluating on %s  (AMP=%s)", device, use_amp)
 
     # --- Dataset ---
-    test_ds = SEN12MSCRDataset.from_config(cfg, split="test")
+    test_ds = build_dataset(cfg, split="test")
     test_loader = DataLoader(
         test_ds,
         batch_size=args.batch_size or cfg.training.batch_size,

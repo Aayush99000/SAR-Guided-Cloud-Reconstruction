@@ -40,7 +40,7 @@ try:
 except ImportError:
     _WANDB = False
 
-from data import SEN12MSCRDataset, collate_fn
+from data import build_dataset, collate_fn
 from models import SAROpticalUNet, DiffusionBridge
 from models.bridge.noise_schedule import BridgeNoiseSchedule
 from models.cloud_aware_loss import CloudAwareLoss, _ssim_map
@@ -299,8 +299,8 @@ def build_optimizer(
 # ---------------------------------------------------------------------------
 
 def build_dataloaders(cfg) -> Tuple[DataLoader, DataLoader]:
-    train_ds = SEN12MSCRDataset.from_config(cfg, split="train")
-    val_ds   = SEN12MSCRDataset.from_config(cfg, split="val")
+    train_ds = build_dataset(cfg, split="train")
+    val_ds   = build_dataset(cfg, split="val")
 
     _nw = cfg.training.num_workers
     train_loader = DataLoader(
@@ -465,6 +465,7 @@ def validate(
                     x_cloudy, sar,
                     cloud_mask=cloud_mask,
                     num_steps=nfe,
+                    composite=cfg.data.get("composite_output", True),
                 )
 
             # Float32 for all metrics

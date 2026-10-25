@@ -11,7 +11,7 @@
 #SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
 #SBATCH --time=08:00:00
@@ -42,7 +42,7 @@ CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_ts_v1"
 LAST_CKPT="${CKPT_DIR}/latest.ckpt"
 THIS_SCRIPT="${ROOT_DIR}/scripts/slurm/02_train_ts.slurm"
 MASK_DIR="${SCRATCH}/Dataset/SEN12MSCRTS/cloud_masks"
-NUM_WORKERS=10
+NUM_WORKERS=12
 PATH_OVERRIDES="paths.output_root=${SCRATCH}/outputs paths.bridge_ckpt_dir=${CKPT_DIR}"
 
 if [[ "$(ls "${MASK_DIR}"/train/*_meta.npz 2>/dev/null | wc -l)" -eq 0 ]]; then
@@ -87,7 +87,12 @@ fi
 echo "[INFO] Current epoch from checkpoint: ${CURRENT_EPOCH} / ${TOTAL_EPOCHS}"
 
 if [[ "${CURRENT_EPOCH}" -ge "${TOTAL_EPOCHS}" ]]; then
-    echo "[INFO] Training complete — run evaluation with --config configs/sen12mscrts.yaml"
+    echo "[INFO] Training complete — submitting test evaluation"
+    if [[ -f "${CKPT_DIR}/.eval_submitted" ]]; then
+        echo "[INFO] Evaluation already submitted ($(cat "${CKPT_DIR}/.eval_submitted"))"
+    else
+        sbatch "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" | tee "${CKPT_DIR}/.eval_submitted"
+    fi
     exit 0
 fi
 

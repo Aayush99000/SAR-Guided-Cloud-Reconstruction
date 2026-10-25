@@ -238,9 +238,9 @@ class SEN12MSCRTSDataset(Dataset):
         return m
 
     @staticmethod
-    def _read(path: Path) -> np.ndarray:
+    def _read(path: Path, bands: Optional[List[int]] = None) -> np.ndarray:
         with rasterio.open(path) as src:
-            return src.read()
+            return src.read([b + 1 for b in bands]) if bands is not None else src.read()
 
     def _s2_path(self, tile: Dict, t: int, patch: int) -> Path:
         name = f"s2_{tile['roi']}_{tile['tile']}_ImgNo_{t}_{tile['s2_dates'][t]}_patch_{patch}.tif"
@@ -250,9 +250,8 @@ class SEN12MSCRTSDataset(Dataset):
         name = f"s1_{tile['roi']}_{tile['tile']}_ImgNo_{t}_{tile['s1_dates'][t]}_patch_{patch}.tif"
         return tile["s1_dir"] / str(t) / name
 
-    def _optical(self, arr: np.ndarray) -> np.ndarray:
-        arr = _preprocess_s2(arr)
-        return arr[self.optical_bands] if self.optical_bands is not None else arr
+    def _optical(self, path: Path) -> np.ndarray:
+        return _preprocess_s2(self._read(path, self.optical_bands))
 
     # ------------------------------------------------------------------
     # Dataset protocol
@@ -269,8 +268,8 @@ class SEN12MSCRTSDataset(Dataset):
         target, inputs, coverage_match = self._select(coverage, tile["valid"][row])
         h, w = tile["hw"]
 
-        clean = self._optical(self._read(self._s2_path(tile, target, patch)))
-        cloudy_stack = np.stack([self._optical(self._read(self._s2_path(tile, t, patch))) for t in inputs])
+        clean = self._optical(self._s2_path(tile, target, patch))
+        cloudy_stack = np.stack([self._optical(self._s2_path(tile, t, patch)) for t in inputs])
         sar = np.concatenate([_preprocess_s1(self._read(self._s1_path(tile, t, patch))) for t in inputs])
 
         packed = self._masks(t_idx)[row, inputs]                              # (T, H*W/8)

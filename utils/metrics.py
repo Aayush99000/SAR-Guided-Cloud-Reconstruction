@@ -241,13 +241,19 @@ def compute_metrics(
     }
 
     if cloud_mask is not None:
-        # Mask to cloud-only pixels
-        m = cloud_mask.float()
-        cloud_pred   = pred.float()  * m
-        cloud_target = target.float() * m
-        n_cloud = m.sum().clamp(min=1.0)
-        out["psnr_cloud"] = psnr(cloud_pred, cloud_target)
-        out["mae_cloud"]  = ((cloud_pred - cloud_target).abs().sum() / n_cloud).item()
+        # Errors over cloud pixels only, normalised by (#cloud pixels x channels).
+        # Undefined (NaN) when the mask is empty; MetricAggregator skips NaN.
+        with torch.no_grad():
+            m = cloud_mask.float().expand_as(pred)
+            n_cloud = m.sum().item()
+            if n_cloud < 1:
+                out["psnr_cloud"] = float("nan")
+                out["mae_cloud"]  = float("nan")
+            else:
+                diff = pred.float() - target.float()
+                mse_cloud = ((diff ** 2) * m).sum().item() / n_cloud
+                out["psnr_cloud"] = float("inf") if mse_cloud == 0 else 10.0 * math.log10(1.0 / mse_cloud)
+                out["mae_cloud"]  = (diff.abs() * m).sum().item() / n_cloud
 
     if use_lpips:
         out["lpips"] = lpips_score(pred, target, net=lpips_net)
@@ -305,20 +311,33 @@ class MetricAggregator:
     def __init__(self) -> None:
         self._sums:   Dict[str, float] = {}
         self._counts: Dict[str, int]   = {}
+        self._seen:   set              = set()
 
     def update(self, metrics: Dict[str, float]) -> None:
-        """Add one dict of scalar metrics (from one batch or one sample)."""
+        """Add one dict of scalar metrics (from one batch or one sample).
+
+        Non-finite values (NaN for undefined metrics, inf for exact matches)
+        are skipped so they cannot poison the mean.
+        """
         for k, v in metrics.items():
-            self._sums[k]   = self._sums.get(k, 0.0) + float(v)
+            self._seen.add(k)
+            fv = float(v)
+            if not math.isfinite(fv):
+                continue
+            self._sums[k]   = self._sums.get(k, 0.0) + fv
             self._counts[k] = self._counts.get(k, 0)  + 1
 
     def compute(self) -> Dict[str, float]:
-        """Return mean of each accumulated metric."""
-        return {k: self._sums[k] / max(self._counts[k], 1) for k in self._sums}
+        """Return mean of each accumulated metric (NaN if no finite values)."""
+        return {
+            k: self._sums[k] / self._counts[k] if self._counts.get(k) else float("nan")
+            for k in sorted(self._seen)
+        }
 
     def reset(self) -> None:
         self._sums.clear()
         self._counts.clear()
+        self._seen.clear()
 
     def __len__(self) -> int:
         return max(self._counts.values(), default=0)

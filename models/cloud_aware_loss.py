@@ -51,6 +51,8 @@ def _ssim_map(
     Boundary pixels are handled by reflect-padding before convolution so the
     spatial resolution is preserved exactly.
     """
+    out_dtype = pred.dtype
+    pred, target = pred.float(), target.float()
     B, C, H, W = pred.shape
     kernel = _gaussian_kernel(window_size).to(pred.device, pred.dtype)
     kernel = kernel.expand(C, 1, window_size, window_size).contiguous()
@@ -72,10 +74,11 @@ def _ssim_map(
     C1, C2 = 0.01 ** 2, 0.03 ** 2
 
     num   = (2.0 * mu12 + C1) * (2.0 * sigma12 + C2)
-    # 1e-8 is invisible at bfloat16 precision (~3.5e-6 at this scale).
-    # Use 1e-4 so the guard survives low-precision autocast on Ampere/Hopper.
-    denom = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-4
-    return num / denom  # (B, C, H, W)
+    # Computed in float32, so C1*C2 (~8e-8) already bounds denom away from 0.
+    # A large guard is harmful: S2 reflectances are ~0.02-0.2, so the true
+    # denom is ~1e-5 and a 1e-4 guard pulled SSIM toward 0.
+    denom = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-12
+    return (num / denom).to(out_dtype)  # (B, C, H, W)
 
 
 # ---------------------------------------------------------------------------

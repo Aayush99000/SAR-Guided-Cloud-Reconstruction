@@ -152,23 +152,28 @@ def load_model(ckpt_path: Path, cfg, device: torch.device) -> DiffusionBridge:
 # Visualisation
 # ---------------------------------------------------------------------------
 
+def _rgb_array(tensor: torch.Tensor, rgb_idx: Tuple[int, int, int] = (2, 1, 0)) -> np.ndarray:
+    """(C, H, W) tensor → (H, W, 3) float array of the selected RGB bands."""
+    img = tensor.detach().cpu().float()
+    return torch.stack([img[b] for b in rgb_idx], dim=0).permute(1, 2, 0).numpy()
+
+
 def _to_uint8(
     tensor: torch.Tensor,
     rgb_idx: Tuple[int, int, int] = (2, 1, 0),
     p_lo: float = 1.0,
     p_hi: float = 99.0,
+    stretch: Optional[Tuple[float, float]] = None,
 ) -> np.ndarray:
     """Convert a (C, H, W) [0, 1] tensor to a (H, W, 3) uint8 RGB array.
 
-    Uses percentile contrast stretching for display clarity.
+    Uses percentile contrast stretching for display clarity, or the fixed
+    ``stretch=(lo, hi)`` so several panels can share one colour scale.
     ``rgb_idx`` selects three channel indices as R, G, B respectively.
     Defaults to (B4, B3, B2) = true-colour for Sentinel-2 band order [1,2,3,7].
     """
-    img = tensor.detach().cpu().float()
-    rgb = torch.stack([img[b] for b in rgb_idx], dim=0)   # (3, H, W)
-    arr = rgb.permute(1, 2, 0).numpy()                     # (H, W, 3)
-    lo  = np.percentile(arr, p_lo)
-    hi  = np.percentile(arr, p_hi)
+    arr = _rgb_array(tensor, rgb_idx)
+    lo, hi = stretch if stretch is not None else (np.percentile(arr, p_lo), np.percentile(arr, p_hi))
     arr = np.clip((arr - lo) / (hi - lo + 1e-8), 0.0, 1.0)
     return (arr * 255).astype(np.uint8)
 
@@ -232,10 +237,14 @@ def save_comparison_strip(
     # Select RGB bands: for [B2,B3,B4,B8] band order, true-colour is (2,1,0)
     rgb_idx = (2, 1, 0)
 
+    # One colour scale for all optical panels, set by the ground truth, so
+    # colour differences between panels are real and not stretch artefacts.
+    gt_rgb     = _rgb_array(clean, rgb_idx)
+    stretch    = (float(np.percentile(gt_rgb, 1.0)), float(np.percentile(gt_rgb, 99.0)))
     sar_img    = _sar_to_uint8(sar)
-    cloudy_img = _to_uint8(cloudy, rgb_idx)
-    pred_img   = _to_uint8(pred,   rgb_idx)
-    clean_img  = _to_uint8(clean,  rgb_idx)
+    cloudy_img = _to_uint8(cloudy, rgb_idx, stretch=stretch)
+    pred_img   = _to_uint8(pred,   rgb_idx, stretch=stretch)
+    clean_img  = _to_uint8(clean,  rgb_idx, stretch=stretch)
 
     n_panels = 5 if cloud_mask is not None else 4
     fig, axes = plt.subplots(1, n_panels, figsize=(4 * n_panels, 4.5),
@@ -255,18 +264,23 @@ def save_comparison_strip(
         axes[-1].set_title("Cloud Mask", fontsize=9, fontweight="bold")
         axes[-1].axis("off")
 
-    # Annotate predicted panel with metrics
+    # Annotate predicted panel with metrics (set_xlabel is hidden by axis("off"))
     annotation_parts = []
     if psnr_val is not None:
-        annotation_parts.append(f"PSNR={psnr_val:.2f} dB")
+        annotation_parts.append(f"PSNR {psnr_val:.2f} dB")
     if ssim_val is not None:
-        annotation_parts.append(f"SSIM={ssim_val:.4f}")
+        annotation_parts.append(f"SSIM {ssim_val:.3f}")
     if sam_val is not None:
-        annotation_parts.append(f"SAM={sam_val:.2f}°")
+        annotation_parts.append(f"SAM {sam_val:.1f}°")
     if annotation_parts:
-        axes[2].set_xlabel("  ".join(annotation_parts), fontsize=7.5, color="steelblue")
+        axes[2].set_title("Predicted\n" + "  ".join(annotation_parts), fontsize=9, fontweight="bold")
 
-    cov_str = f"  |  cloud coverage: {coverage:.1%}" if coverage is not None else ""
+    cov_parts = []
+    if coverage is not None:
+        cov_parts.append(f"input cloud cover: {coverage:.1%}")
+    if cloud_mask is not None:
+        cov_parts.append(f"masked pixels: {float(cloud_mask.float().mean()):.1%}")
+    cov_str = ("  |  " + "  |  ".join(cov_parts)) if cov_parts else ""
     fig.suptitle(f"SAR-Guided Cloud Removal{cov_str}", fontsize=10)
 
     plt.savefig(save_path, dpi=150, bbox_inches="tight")

@@ -7,10 +7,10 @@
 #                              UnCRtainTS fixed_sampler with min_cov=0 / max_cov=1
 # Both use eval_target_policy=least_cloudy, eval_input_policy=first.
 #
-# Submit (from anywhere):
-#   sbatch scripts/slurm/03_eval_ts.slurm
+# First argument picks the experiment (v1 | tsar), matching 02_train_ts.slurm:
+#   sbatch scripts/slurm/03_eval_ts.slurm tsar
 # Override checkpoint:
-#   sbatch --export=ALL,CKPT=/path/to/epoch_0100.ckpt scripts/slurm/03_eval_ts.slurm
+#   sbatch --export=ALL,CKPT=/path/to/epoch_0100.ckpt scripts/slurm/03_eval_ts.slurm v1
 # =============================================================================
 #SBATCH --job-name=eval_ts
 #SBATCH --partition=gpu
@@ -25,15 +25,21 @@
 set -euo pipefail
 
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
-CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_v1/best.ckpt}"
-BACKUP_ROOT="/home/katoch.aa/SAR-Diffusion-Bridge/results/eval_ts_v1"
+EXP="${1:-v1}"
+case "${EXP}" in
+    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
+    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml" ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar)"; exit 1 ;;
+esac
+CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
+BACKUP_ROOT="/home/katoch.aa/SAR-Diffusion-Bridge/results/eval_ts_${EXP}"
 
 case "${SLURM_ARRAY_TASK_ID:-0}" in
     0) PROTOCOL="ours";       PROTO_ARGS="data.ts.exclude_target_from_inputs=true" ;;
     1) PROTOCOL="uncrtaints"; PROTO_ARGS="data.ts.exclude_target_from_inputs=false" ;;
     *) echo "[ERROR] unknown array task ${SLURM_ARRAY_TASK_ID}"; exit 1 ;;
 esac
-OUT_DIR="${SCRATCH}/outputs/eval/ts_v1/${PROTOCOL}"
+OUT_DIR="${SCRATCH}/outputs/eval/ts_${EXP}/${PROTOCOL}"
 
 CONDA_BASE="/shared/EL9/explorer/anaconda3/2024.06"
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
@@ -43,7 +49,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd "${SCRATCH}"
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  SEN12MS-CR-TS test evaluation — protocol: ${PROTOCOL}"
+echo "  SEN12MS-CR-TS test evaluation — experiment: ${EXP}  protocol: ${PROTOCOL}"
 echo "  Job ID : ${SLURM_JOB_ID}   Node: ${SLURMD_NODENAME}"
 echo "  Ckpt   : ${CKPT}"
 echo "  Out    : ${OUT_DIR}"
@@ -57,7 +63,7 @@ if [[ ! -f "${CKPT}" ]]; then
 fi
 
 PYTHONPATH="${SCRATCH}" python train/evaluate.py \
-    --config configs/sen12mscrts.yaml \
+    --config ${EXTRA_CONFIGS} \
     --ckpt "${CKPT}" \
     --nfe 1 3 5 10 \
     --viz-every 50 \

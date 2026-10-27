@@ -708,8 +708,8 @@ def _parse_args() -> Tuple[argparse.Namespace, List[str]]:
         help="Path to a latest.ckpt / epoch_NNNN.ckpt to resume from",
     )
     parser.add_argument(
-        "--config", default=None, metavar="YAML",
-        help="Extra YAML to merge on top of default.yaml (e.g. an ablation config)",
+        "--config", nargs="+", default=None, metavar="YAML",
+        help="Extra YAML(s) merged in order on top of default.yaml (e.g. dataset + ablation)",
     )
     args, overrides = parser.parse_known_args()
     return args, overrides
@@ -740,8 +740,7 @@ def main() -> None:
         cfg = OmegaConf.merge(cfg, OmegaConf.load(paths_cfg))
 
     # Merge extra config (e.g. ablation override file)
-    if args.config:
-        extra = Path(args.config)
+    for extra in map(Path, args.config or []):
         if not extra.exists():
             raise FileNotFoundError(f"--config file not found: {extra}")
         cfg = OmegaConf.merge(cfg, OmegaConf.load(extra))

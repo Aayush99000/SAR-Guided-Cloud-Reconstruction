@@ -1,0 +1,12 @@
+# Ablation: add the target date's SAR (VV/VH) to the 3 input dates' SAR.
+# Merge after the TS overlay:
+#   --config configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml
+# Everything else (model, schedule, epochs, eval protocol) matches bridge_ts_v1.
+
+paths:
+  bridge_ckpt_dir: ${paths.output_root}/checkpoints/bridge_ts_tsar
+
+data:
+  sar_bands: 8                    # (3 input dates + target date) × VV/VH
+  ts:
+    include_target_sar: true

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 02_train_ts.slurm — Train the OT-ODE bridge on SEN12MS-CR-TS (3 dates, 6ch SAR)
+# 02_train_ts.slurm — Train the OT-ODE bridge on SEN12MS-CR-TS
 # =============================================================================
-# Self-chaining 8 h sessions; resumes from latest.ckpt. Submit from the repo root:
-#   cd /scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction
-#   sbatch scripts/slurm/02_train_ts.slurm
+# Self-chaining 8 h sessions; resumes from latest.ckpt. First argument picks the
+# experiment (checkpoints go to outputs/checkpoints/bridge_ts_<exp>):
+#   sbatch -J bridge_ts_v1   scripts/slurm/02_train_ts.slurm v1    # 3 input dates' SAR (6ch)
+#   sbatch -J bridge_ts_tsar scripts/slurm/02_train_ts.slurm tsar  # + target-date SAR (8ch)
 # Requires the cloud-mask index from 05_precompute_ts_clouds.slurm.
 # =============================================================================
 #SBATCH --job-name=bridge_ts
@@ -37,8 +38,15 @@ ROOT_DIR="${SCRATCH}"
 cd "${ROOT_DIR}"
 mkdir -p logs/slurm
 
+EXP="${1:-v1}"
+case "${EXP}" in
+    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
+    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml" ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar)"; exit 1 ;;
+esac
+
 TOTAL_EPOCHS=100
-CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_ts_v1"
+CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}"
 LAST_CKPT="${CKPT_DIR}/latest.ckpt"
 THIS_SCRIPT="${ROOT_DIR}/scripts/slurm/02_train_ts.slurm"
 MASK_DIR="${SCRATCH}/Dataset/SEN12MSCRTS/cloud_masks"
@@ -61,7 +69,8 @@ conda activate cloud-env
 python -c "import omegaconf, lpips, rasterio" || { echo "[ERROR] cloud-env broken"; exit 1; }
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  SAR Bridge Training — SEN12MS-CR-TS (T=3)"
+echo "  SAR Bridge Training — SEN12MS-CR-TS (T=3) — experiment: ${EXP}"
+echo "  Configs: ${EXTRA_CONFIGS}"
 echo "  Job ID : ${SLURM_JOB_ID}   Node: ${SLURMD_NODENAME}"
 echo "  Ckpts  : ${CKPT_DIR}"
 echo "  Start  : $(date)"
@@ -69,7 +78,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
     echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
-    sbatch --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}"
+    sbatch -J "bridge_ts_${EXP}" --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}" "${EXP}"
     exit 0
 fi
 
@@ -91,12 +100,12 @@ if [[ "${CURRENT_EPOCH}" -ge "${TOTAL_EPOCHS}" ]]; then
     if [[ -f "${CKPT_DIR}/.eval_submitted" ]]; then
         echo "[INFO] Evaluation already submitted ($(cat "${CKPT_DIR}/.eval_submitted"))"
     else
-        sbatch "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" | tee "${CKPT_DIR}/.eval_submitted"
+        sbatch -J "eval_ts_${EXP}" "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" "${EXP}" | tee "${CKPT_DIR}/.eval_submitted"
     fi
     exit 0
 fi
 
-NEXT_JOB=$(sbatch --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" 2>&1)
+NEXT_JOB=$(sbatch -J "bridge_ts_${EXP}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" 2>&1)
 echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
 
 if [[ -f "${LAST_CKPT}" ]]; then
@@ -116,7 +125,7 @@ fi
 echo "[INFO] GPU memory: ${GPU_MEM}GB → ${BATCH_ARGS}"
 
 PYTHONPATH="${ROOT_DIR}" python train/train_bridge.py \
-    --config configs/sen12mscrts.yaml \
+    --config ${EXTRA_CONFIGS} \
     training.num_workers="${NUM_WORKERS}" \
     training.num_epochs="${TOTAL_EPOCHS}" \
     logging.use_wandb=true \

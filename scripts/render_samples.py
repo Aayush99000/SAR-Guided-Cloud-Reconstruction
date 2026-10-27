@@ -25,7 +25,7 @@ from utils.metrics import compute_metrics            # noqa: E402
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--config", required=True)
+    ap.add_argument("--config", required=True, nargs="+", help="YAML(s) merged in order on top of default.yaml")
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--split", default="test")
     ap.add_argument("--nfe", type=int, default=3)
@@ -38,7 +38,8 @@ def main() -> None:
     cfg = OmegaConf.load(root / "default.yaml")
     if (root / "paths.yaml").exists():
         cfg = OmegaConf.merge(cfg, OmegaConf.load(root / "paths.yaml"))
-    cfg = OmegaConf.merge(cfg, OmegaConf.load(args.config))
+    for extra in args.config:
+        cfg = OmegaConf.merge(cfg, OmegaConf.load(extra))
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
 

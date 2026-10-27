@@ -26,6 +26,12 @@ exclude_target_from_inputs
     UnCRtainTS's fixed sampler does NOT exclude the target, so with
     min_cov=0/max_cov=1 the target can be one of the inputs.  Set False only
     to reproduce that protocol exactly; True avoids the model seeing the answer.
+include_target_sar
+    Append the target date's S1 (VV, VH) after the input dates' S1, giving
+    2 * (n_input + 1) SAR channels.  SAR is cloud-independent, so a radar
+    acquisition at the date being reconstructed is a realistic input; the
+    optical target itself is never shown.  This changes the task relative to
+    UnCRtainTS (which uses SAR from the input dates only) and must be reported.
 min_input_cov / max_input_cov
     Inputs are drawn only from dates whose coverage lies in this range
     (UnCRtainTS ``min_cov`` / ``max_cov``).  If a location has fewer than
@@ -107,6 +113,7 @@ class SEN12MSCRTSDataset(Dataset):
         clear_thresh: float = 1e-3,
         min_input_cov: float = 0.0,
         max_input_cov: float = 1.0,
+        include_target_sar: bool = False,
         val_tiles: Optional[Sequence[str]] = None,
         augment: Optional[bool] = None,
         regions: Optional[Sequence[str]] = None,
@@ -129,6 +136,7 @@ class SEN12MSCRTSDataset(Dataset):
         self.clear_thresh = clear_thresh
         self.min_input_cov = min_input_cov
         self.max_input_cov = max_input_cov
+        self.include_target_sar = include_target_sar
         self.augment = (split == "train") if augment is None else augment
 
         src_split = "test" if split == "test" else "train"
@@ -190,9 +198,10 @@ class SEN12MSCRTSDataset(Dataset):
         self._masks_cache: Dict[int, np.ndarray] = {}
         log.info(
             "SEN12MSCRTSDataset | split=%s | %d tiles | %d locations (%d skipped: too few valid dates) "
-            "| T=%d | target=%s inputs=%s exclude_target=%s input_cov=[%.2f, %.2f]",
+            "| T=%d | target=%s inputs=%s exclude_target=%s input_cov=[%.2f, %.2f] target_sar=%s",
             split, len(self._tiles), len(self._index), n_skipped, n_input,
             target_policy, input_policy, exclude_target_from_inputs, min_input_cov, max_input_cov,
+            include_target_sar,
         )
 
     # ------------------------------------------------------------------
@@ -270,7 +279,8 @@ class SEN12MSCRTSDataset(Dataset):
 
         clean = self._optical(self._s2_path(tile, target, patch))
         cloudy_stack = np.stack([self._optical(self._s2_path(tile, t, patch)) for t in inputs])
-        sar = np.concatenate([_preprocess_s1(self._read(self._s1_path(tile, t, patch))) for t in inputs])
+        sar_dates = list(inputs) + ([target] if self.include_target_sar else [])
+        sar = np.concatenate([_preprocess_s1(self._read(self._s1_path(tile, t, patch))) for t in sar_dates])
 
         packed = self._masks(t_idx)[row, inputs]                              # (T, H*W/8)
         in_masks = np.unpackbits(packed, axis=-1, count=h * w).reshape(len(inputs), h, w).astype(bool)
@@ -312,6 +322,7 @@ class SEN12MSCRTSDataset(Dataset):
             "input_t": list(inputs),
             "target_date": target_date,
             "input_dates": [tile["s2_dates"][t] for t in inputs],
+            "sar_dates": [tile["s1_dates"][t] for t in sar_dates],
             "season": _SEASON_BY_MONTH[date.fromisoformat(target_date).month] if target_date else "",
             "region": tile["region"],
             "roi": tile["roi"],
@@ -341,6 +352,7 @@ class SEN12MSCRTSDataset(Dataset):
             clear_thresh=float(ts.get("clear_thresh", 1e-3)),
             min_input_cov=float(ts.get(f"{phase}_min_input_cov", 0.0)),
             max_input_cov=float(ts.get(f"{phase}_max_input_cov", 1.0)),
+            include_target_sar=bool(ts.get("include_target_sar", False)),
             val_tiles=list(ts.val_tiles) if ts.get("val_tiles") else None,
             augment=bool(cfg.data.get("augmentation", True)) and split == "train",
             regions=list(ts.regions) if ts.get("regions") else None,

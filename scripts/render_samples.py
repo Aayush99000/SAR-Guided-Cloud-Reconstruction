@@ -38,7 +38,9 @@ def main() -> None:
     cfg = OmegaConf.load(root / "default.yaml")
     if (root / "paths.yaml").exists():
         cfg = OmegaConf.merge(cfg, OmegaConf.load(root / "paths.yaml"))
-    for extra in args.config:
+    # --config is nargs="+", so it swallows dotlist overrides that follow it
+    overrides = [c for c in args.config if "=" in c] + overrides
+    for extra in (c for c in args.config if "=" not in c):
         cfg = OmegaConf.merge(cfg, OmegaConf.load(extra))
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))

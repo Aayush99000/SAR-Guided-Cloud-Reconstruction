@@ -739,8 +739,12 @@ def main() -> None:
     if paths_cfg.exists():
         cfg = OmegaConf.merge(cfg, OmegaConf.load(paths_cfg))
 
+    # --config is nargs="+", so it swallows dotlist overrides that follow it
+    configs = [c for c in (args.config or []) if "=" not in c]
+    overrides = [c for c in (args.config or []) if "=" in c] + overrides
+
     # Merge extra config (e.g. ablation override file)
-    for extra in map(Path, args.config or []):
+    for extra in map(Path, configs):
         if not extra.exists():
             raise FileNotFoundError(f"--config file not found: {extra}")
         cfg = OmegaConf.merge(cfg, OmegaConf.load(extra))

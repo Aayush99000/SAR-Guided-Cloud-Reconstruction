@@ -15,6 +15,7 @@
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:1
+#SBATCH --exclude=d1025               # only T4 node: ~3x slower than V100 (4 vs ~13 epochs/session)
 #SBATCH --time=08:00:00
 #SBATCH --output=/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction/logs/slurm/train_ts_%j.out
 #SBATCH --error=/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction/logs/slurm/train_ts_%j.err
@@ -78,7 +79,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
     echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
-    sbatch -J "bridge_ts_${EXP}" --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}" "${EXP}"
+    sbatch -J "bridge_ts_${EXP}" --exclude="d1025,${SLURMD_NODENAME}" "${THIS_SCRIPT}" "${EXP}"
     exit 0
 fi
 

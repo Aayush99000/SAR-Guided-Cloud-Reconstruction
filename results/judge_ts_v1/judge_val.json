@@ -1,0 +1,17 @@
+{
+  "epoch": 14,
+  "pixel_acc": 0.6907066567440551,
+  "miou": 0.4692009575537164,
+  "n_pixels": 87752435,
+  "iou_tree_cover": 0.7044642027095526,
+  "iou_shrubland": 0.1657527821752233,
+  "iou_grassland": 0.40934137012931676,
+  "iou_cropland": 0.7339539620358292,
+  "iou_built_up": 0.5109568264428231,
+  "iou_bare_sparse": 0.6445561712955868,
+  "iou_snow_ice": NaN,
+  "iou_water": 0.5845823456413991,
+  "iou_herbaceous_wetland": 0.0,
+  "iou_mangroves": NaN,
+  "iou_moss_lichen": NaN
+}

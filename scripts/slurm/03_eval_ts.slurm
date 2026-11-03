@@ -11,6 +11,9 @@
 #   sbatch scripts/slurm/03_eval_ts.slurm tsar
 # Override checkpoint:
 #   sbatch --export=ALL,CKPT=/path/to/epoch_0100.ckpt scripts/slurm/03_eval_ts.slurm v1
+# Variant run (extra overrides, results under ts_<exp>_<tag>):
+#   TAG=composite EXTRA_ARGS=data.composite_output=true NFE_LIST="1 3" \
+#       sbatch --array=0 scripts/slurm/03_eval_ts.slurm v1
 # =============================================================================
 #SBATCH --job-name=eval_ts
 #SBATCH --partition=gpu
@@ -32,14 +35,18 @@ case "${EXP}" in
     *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar)"; exit 1 ;;
 esac
 CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
-BACKUP_ROOT="/home/katoch.aa/SAR-Diffusion-Bridge/results/eval_ts_${EXP}"
+TAG="${TAG:-}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
+NFE_LIST="${NFE_LIST:-1 3 5 10}"
+RUN="ts_${EXP}${TAG:+_${TAG}}"
+BACKUP_ROOT="/home/katoch.aa/SAR-Diffusion-Bridge/results/eval_${RUN}"
 
 case "${SLURM_ARRAY_TASK_ID:-0}" in
     0) PROTOCOL="ours";       PROTO_ARGS="data.ts.exclude_target_from_inputs=true" ;;
     1) PROTOCOL="uncrtaints"; PROTO_ARGS="data.ts.exclude_target_from_inputs=false" ;;
     *) echo "[ERROR] unknown array task ${SLURM_ARRAY_TASK_ID}"; exit 1 ;;
 esac
-OUT_DIR="${SCRATCH}/outputs/eval/ts_${EXP}/${PROTOCOL}"
+OUT_DIR="${SCRATCH}/outputs/eval/${RUN}/${PROTOCOL}"
 
 CONDA_BASE="/shared/EL9/explorer/anaconda3/2024.06"
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
@@ -53,6 +60,7 @@ echo "  SEN12MS-CR-TS test evaluation — experiment: ${EXP}  protocol: ${PROTOC
 echo "  Job ID : ${SLURM_JOB_ID}   Node: ${SLURMD_NODENAME}"
 echo "  Ckpt   : ${CKPT}"
 echo "  Out    : ${OUT_DIR}"
+echo "  Extra  : ${EXTRA_ARGS:-none}   NFE: ${NFE_LIST}"
 echo "  Start  : $(date)"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 python -c "import torch; print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')"
@@ -65,12 +73,12 @@ fi
 PYTHONPATH="${SCRATCH}" python train/evaluate.py \
     --config ${EXTRA_CONFIGS} \
     --ckpt "${CKPT}" \
-    --nfe 1 3 5 10 \
+    --nfe ${NFE_LIST} \
     --viz-every 50 \
     --lpips \
     --out-dir "${OUT_DIR}" \
     training.num_workers=12 \
-    ${PROTO_ARGS}
+    ${PROTO_ARGS} ${EXTRA_ARGS}
 
 # Scratch can be purged; back up the small result files (not the PNG strips).
 mkdir -p "${BACKUP_ROOT}/${PROTOCOL}"

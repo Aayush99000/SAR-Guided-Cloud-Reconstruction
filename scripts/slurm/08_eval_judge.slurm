@@ -5,6 +5,8 @@
 # First argument picks the experiment (v1 | tsar), as in 03_eval_ts.slurm.
 # Uses our protocol (target excluded from the inputs) at NFE 3.
 #   sbatch scripts/slurm/08_eval_judge.slurm v1
+# Variant run (extra overrides, results under judge_ts_<exp>_<tag>):
+#   sbatch --export=ALL,TAG=composite,EXTRA_ARGS=data.composite_output=true scripts/slurm/08_eval_judge.slurm v1
 # Smoke test (64 samples, smoke judge):
 #   sbatch --export=ALL,LIMIT=64,JUDGE=/scratch/.../judge_smoke/best.ckpt --time=00:30:00 \
 #       scripts/slurm/08_eval_judge.slurm v1
@@ -32,12 +34,15 @@ JUDGE="${JUDGE:-${SCRATCH}/outputs/checkpoints/judge/best.ckpt}"
 WC_DIR="${SCRATCH}/Dataset/SEN12MSCRTS/worldcover"
 NFE="${NFE:-3}"
 LIMIT="${LIMIT:-0}"
+TAG="${TAG:-}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
+RUN="judge_ts_${EXP}${TAG:+_${TAG}}"
 if [[ "${LIMIT}" -gt 0 ]]; then
     OUT_DIR="${SCRATCH}/outputs/eval/judge_smoke_${EXP}"
 else
-    OUT_DIR="${SCRATCH}/outputs/eval/judge_ts_${EXP}"
+    OUT_DIR="${SCRATCH}/outputs/eval/${RUN}"
 fi
-BACKUP_ROOT="/home/katoch.aa/SAR-Diffusion-Bridge/results/judge_ts_${EXP}"
+BACKUP_ROOT="/home/katoch.aa/SAR-Diffusion-Bridge/results/${RUN}"
 
 CONDA_BASE="/shared/EL9/explorer/anaconda3/2024.06"
 source "${CONDA_BASE}/etc/profile.d/conda.sh"
@@ -49,6 +54,7 @@ cd "${SCRATCH}"
 echo "[INFO] Judge eval | experiment ${EXP} | job ${SLURM_JOB_ID} on ${SLURMD_NODENAME} | $(date)"
 echo "[INFO] Bridge ${CKPT}"
 echo "[INFO] Judge  ${JUDGE}"
+echo "[INFO] Extra  ${EXTRA_ARGS:-none}"
 for f in "${CKPT}" "${JUDGE}"; do
     [[ -f "${f}" ]] || { echo "[ERROR] Missing ${f}"; exit 1; }
 done
@@ -62,7 +68,7 @@ PYTHONPATH="${SCRATCH}" python train/evaluate_judge.py \
     --limit "${LIMIT}" \
     --out-dir "${OUT_DIR}" \
     training.num_workers=12 \
-    data.ts.exclude_target_from_inputs=true
+    data.ts.exclude_target_from_inputs=true ${EXTRA_ARGS}
 
 if [[ "${LIMIT}" -eq 0 ]]; then
     mkdir -p "${BACKUP_ROOT}"

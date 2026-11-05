@@ -228,20 +228,7 @@ def load_checkpoint(
 
 def build_model(cfg, device: torch.device) -> Tuple[DiffusionBridge, EMA]:
     """Construct SAROpticalUNet → BridgeNoiseSchedule → CloudAwareLoss → DiffusionBridge."""
-    unet = SAROpticalUNet(
-        in_channels_optical=cfg.model.in_channels_optical,
-        in_channels_sar=cfg.data.sar_bands,
-        base_channels=cfg.model.base_channels,
-        channel_mult=list(cfg.model.channel_mult),
-        num_nafblocks=list(cfg.model.num_nafblocks),
-        num_dec_nafblocks=list(cfg.model.num_dec_nafblocks),
-        num_vim_blocks=cfg.model.num_vim_blocks,
-        time_emb_dim=cfg.model.time_emb_dim,
-        dropout=cfg.model.dropout,
-        vim_d_state=cfg.model.vim_d_state,
-        bottleneck_type=cfg.model.get("bottleneck_type", "vim"),
-        fusion_mode=cfg.model.get("fusion_mode", "sfblock"),
-    ).to(device)
+    unet = SAROpticalUNet.from_config(cfg).to(device)
 
     schedule = BridgeNoiseSchedule(
         num_steps=cfg.diffusion.diffusion_steps,

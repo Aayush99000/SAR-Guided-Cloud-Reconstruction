@@ -27,7 +27,9 @@ EXP="${1:-v1}"
 case "${EXP}" in
     v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
     tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml" ;;
-    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar)"; exit 1 ;;
+    mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_mask.yaml" ;;
+    tsar_mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_mask.yaml" ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | mask | tsar_mask)"; exit 1 ;;
 esac
 CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
 JUDGE="${JUDGE:-${SCRATCH}/outputs/checkpoints/judge/best.ckpt}"

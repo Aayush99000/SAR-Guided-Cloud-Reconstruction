@@ -11,7 +11,8 @@ Two branches run in parallel then fuse via SFBlock:
                     bottleneck, and timestep conditioning in every NAFBlock.
 
 Input to the optical encoder:
-    cat(x_t, x_cloudy_mean, sar)  →  (B, 2·C_opt + C_sar, H, W)
+    cat(x_t, x_cloudy_mean, sar [, cloud_mask])  →  (B, 2·C_opt + C_sar [+ 1], H, W)
+    The cloud mask channel is added when ``mask_input=True``.
 
 Output:
     Predicted clean image x_0  →  (B, C_opt, H, W)
@@ -183,7 +184,29 @@ class SAROpticalUNet(nn.Module):
         time_emb_dim:         Timestep embedding dimension.
         dropout:              NAFBlock dropout probability (default 0 = off).
         vim_d_state:          Mamba SSM state size inside VimBlocks.
+        mask_input:           Concatenate the cloud mask (1 = cloudy) to the
+                              optical encoder input, so the network knows which
+                              pixels of x_cloudy are observed and which are cloud.
     """
+
+    @classmethod
+    def from_config(cls, cfg) -> "SAROpticalUNet":
+        """Build from the merged OmegaConf config (shared by training and evaluation)."""
+        return cls(
+            in_channels_optical=cfg.model.in_channels_optical,
+            in_channels_sar=cfg.data.sar_bands,
+            base_channels=cfg.model.base_channels,
+            channel_mult=list(cfg.model.channel_mult),
+            num_nafblocks=list(cfg.model.num_nafblocks),
+            num_dec_nafblocks=list(cfg.model.num_dec_nafblocks),
+            num_vim_blocks=cfg.model.num_vim_blocks,
+            time_emb_dim=cfg.model.time_emb_dim,
+            dropout=cfg.model.dropout,
+            vim_d_state=cfg.model.vim_d_state,
+            bottleneck_type=cfg.model.get("bottleneck_type", "vim"),
+            fusion_mode=cfg.model.get("fusion_mode", "sfblock"),
+            mask_input=cfg.model.get("mask_input", False),
+        )
 
     def __init__(
         self,
@@ -200,6 +223,7 @@ class SAROpticalUNet(nn.Module):
         vim_d_state:         int       = 16,
         bottleneck_type:     str       = "vim",
         fusion_mode:         str       = "sfblock",
+        mask_input:          bool      = False,
     ) -> None:
         super().__init__()
 
@@ -219,6 +243,7 @@ class SAROpticalUNet(nn.Module):
             )
         self.bottleneck_type = bottleneck_type
         self.fusion_mode     = fusion_mode
+        self.mask_input      = mask_input
 
         N = len(channel_mult)
         assert len(num_nafblocks)     == N, "num_nafblocks length must match channel_mult"
@@ -256,15 +281,16 @@ class SAROpticalUNet(nn.Module):
         # ----------------------------------------------------------------
         # Optical encoder  —  NAFBlocks + SFBlock at each level
         #
-        # Input: cat(x_t, x_cloudy_mean [, sar_raw])
+        # Input: cat(x_t, x_cloudy_mean [, sar_raw] [, cloud_mask])
         #   fusion_mode="sfblock"/"early_concat": SAR concatenated to input
         #   fusion_mode="none":                   optical-only input
+        #   mask_input=True:                      + 1 cloud-mask channel
         # ----------------------------------------------------------------
         opt_in_ch = (
             2 * in_channels_optical + in_channels_sar
             if fusion_mode != "none"
             else 2 * in_channels_optical
-        )
+        ) + int(mask_input)
         self.opt_input = nn.Conv2d(opt_in_ch, channels[0], 1, bias=False)
 
         self.enc_blocks   = nn.ModuleList()
@@ -389,9 +415,8 @@ class SAROpticalUNet(nn.Module):
             t:             Diffusion timestep  (B,), values in [0, 1].
             x_cloudy_mean: Mean of cloudy observations  (B, C_opt, H, W).
             sar:           SAR image  (B, C_sar, H, W).
-            cloud_mask:    Optional cloud binary mask  (B, 1, H, W).
-                           Unused in the forward pass; accepted for API
-                           compatibility with the bridge training loop.
+            cloud_mask:    Cloud binary mask  (B, 1, H, W), 1 = cloudy.
+                           Required when ``mask_input=True``; ignored otherwise.
 
         Returns:
             Predicted clean image  (B, C_opt, H, W).
@@ -414,11 +439,14 @@ class SAROpticalUNet(nn.Module):
         # ---- Optical encoder --------------------------------------------
         # fusion_mode="none": optical-only input (no SAR channels)
         # fusion_mode="sfblock"/"early_concat": SAR concatenated to input
-        if self.fusion_mode == "none":
-            h = self.opt_input(torch.cat([x_t, x_cloudy_mean], dim=1))
-        else:
-            sar_aligned = self._align(sar, x_t)
-            h = self.opt_input(torch.cat([x_t, x_cloudy_mean, sar_aligned], dim=1))
+        opt_in = [x_t, x_cloudy_mean]
+        if self.fusion_mode != "none":
+            opt_in.append(self._align(sar, x_t))
+        if self.mask_input:
+            if cloud_mask is None:
+                raise ValueError("mask_input=True but no cloud_mask was passed")
+            opt_in.append(self._align(cloud_mask.to(x_t.dtype), x_t))
+        h = self.opt_input(torch.cat(opt_in, dim=1))
 
         enc_skips: List[torch.Tensor] = []
 
@@ -526,4 +554,20 @@ if __name__ == "__main__":
         out_sar  = model(x_t, t, x_cld, sar)
         out_nosar = model(x_t, t, x_cld, sar_zeros)
     assert not torch.allclose(out_sar, out_nosar), "SAR input has no effect — SFBlock may be bypassed"
-    print(f"  SAR conditioning check   PASSED  ✓\n")
+    print(f"  SAR conditioning check   PASSED  ✓")
+
+    # Confirm the cloud mask reaches the output when mask_input=True
+    model_m = SAROpticalUNet(
+        in_channels_optical=C_opt, in_channels_sar=C_sar, base_channels=32,
+        num_nafblocks=[1, 1, 1, 4], num_vim_blocks=1, time_emb_dim=64, mask_input=True,
+    ).to(device).eval()
+    with torch.no_grad():
+        out_m  = model_m(x_t, t, x_cld, sar, mask)
+        out_m0 = model_m(x_t, t, x_cld, sar, torch.zeros_like(mask))
+    assert not torch.allclose(out_m, out_m0), "cloud_mask has no effect with mask_input=True"
+    try:
+        model_m(x_t, t, x_cld, sar)
+        raise AssertionError("mask_input=True accepted a missing cloud_mask")
+    except ValueError:
+        pass
+    print(f"  Mask conditioning check  PASSED  ✓\n")

@@ -99,18 +99,7 @@ def load_model(ckpt_path: Path, cfg, device: torch.device) -> DiffusionBridge:
     shadow weights (``"ema"`` key).  For evaluation we use the EMA copy,
     which is consistently better than the live weights near convergence.
     """
-    unet = SAROpticalUNet(
-        in_channels_optical=cfg.model.in_channels_optical,
-        in_channels_sar=cfg.data.sar_bands,
-        base_channels=cfg.model.base_channels,
-        channel_mult=list(cfg.model.channel_mult),
-        num_nafblocks=list(cfg.model.num_nafblocks),
-        num_dec_nafblocks=list(cfg.model.num_dec_nafblocks),
-        num_vim_blocks=cfg.model.num_vim_blocks,
-        time_emb_dim=cfg.model.time_emb_dim,
-        dropout=cfg.model.dropout,
-        vim_d_state=cfg.model.vim_d_state,
-    ).to(device)
+    unet = SAROpticalUNet.from_config(cfg).to(device)
 
     schedule = BridgeNoiseSchedule(
         num_steps=cfg.diffusion.diffusion_steps,
@@ -138,6 +127,10 @@ def load_model(ckpt_path: Path, cfg, device: torch.device) -> DiffusionBridge:
             for k, v in ckpt["ema"].items()
             if k in model_state
         }
+        missing = sorted(set(model_state) - set(ema_state))
+        if missing:
+            raise RuntimeError(f"EMA weights in {ckpt_path} lack {len(missing)} model keys, e.g. {missing[:3]} "
+                               "— does the config match the checkpoint?")
         bridge.load_state_dict(ema_state, strict=False)
         log.info("Loaded EMA weights from %s  (epoch %s)", ckpt_path, ckpt.get("epoch", "?"))
     else:

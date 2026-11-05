@@ -72,6 +72,7 @@ model:
   # Ablation switches (see configs/ablations/ for study configs)
   bottleneck_type: vim            # "vim" | "attention" | "none"
   fusion_mode: sfblock            # "sfblock" | "early_concat" | "none"
+  mask_input: false               # true = feed the cloud mask to the network as an input channel
 
 # ---------------------------------------------------------------------------
 # Data  (SEN12MS-CR)

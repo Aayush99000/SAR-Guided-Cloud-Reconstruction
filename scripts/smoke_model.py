@@ -59,6 +59,7 @@ def main() -> None:
     m = bridge.model
     n_par = sum(p.numel() for p in m.parameters())
     print(f"[model] mask_input={m.mask_input} temporal_mode={m.temporal_mode} "
+          f"date_conditioning={m.date_conditioning} "
           f"opt_input in_ch={m.opt_input.in_channels} params={n_par / 1e6:.2f}M")
     opt = torch.optim.AdamW(bridge.parameters(), lr=1e-4)
     bridge.train()
@@ -81,6 +82,10 @@ def main() -> None:
         g = sum(f.proj.weight.abs().sum().item() for f in m.temporal_fusion)
         print(f"[train] |temporal fusion proj| after training {g:.3e}")
         assert g > 0, "temporal fusion stayed at its zero initialisation"
+    if m.date_conditioning:
+        g = m.date_emb.mlp[-1].weight.abs().sum().item()
+        print(f"[train] |date embedding output layer| after training {g:.3e}")
+        assert g > 0, "date embedding stayed at its zero initialisation"
 
     bridge.eval()
     temporal = bridge.temporal_inputs(val)
@@ -93,12 +98,18 @@ def main() -> None:
             d = (p - p0).abs().mean().item()
             print(f"[sample] mean |pred(mask) - pred(zero mask)| = {d:.3e}")
             assert d > 0, "prediction ignores the cloud mask"
-        if temporal is not None:
+        if m.temporal_mode != "none":
             shifted = {**temporal, "input_dt": temporal["input_dt"] - 0.5}
             p1 = bridge.sample(x_c, sar, cloud_mask=cm, num_steps=3, composite=False, temporal=shifted)
             d = (p - p1).abs().mean().item()
-            print(f"[sample] mean |pred(dates) - pred(dates - 6 months)| = {d:.3e}")
+            print(f"[sample] mean |pred(dates) - pred(input dates - 6 months)| = {d:.3e}")
             assert d > 0, "prediction ignores the input dates"
+        if m.date_conditioning:
+            season = {**temporal, "target_doy": (temporal["target_doy"] + 0.5) % 1.0}
+            p2 = bridge.sample(x_c, sar, cloud_mask=cm, num_steps=3, composite=False, temporal=season)
+            d = (p - p2).abs().mean().item()
+            print(f"[sample] mean |pred(target date) - pred(target date + 6 months)| = {d:.3e}")
+            assert d > 0, "prediction ignores the target date"
     print("SMOKE PASSED")
 
 

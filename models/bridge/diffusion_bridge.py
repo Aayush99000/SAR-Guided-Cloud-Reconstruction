@@ -173,8 +173,8 @@ class DiffusionBridge(nn.Module):
         )
 
     def temporal_inputs(self, batch: Dict[str, Any]) -> Optional[Dict[str, torch.Tensor]]:
-        """Per-date inputs for a multi-temporal model, on self.device; None otherwise."""
-        if getattr(self.model, "temporal_mode", "none") == "none":
+        """Per-date / date inputs for a model that uses them, on self.device; None otherwise."""
+        if not getattr(self.model, "uses_temporal_inputs", False):
             return None
         missing = [k for k in TEMPORAL_KEYS if k not in batch]
         if missing:
@@ -402,9 +402,9 @@ class DiffusionBridge(nn.Module):
         device    = x_cloudy.device
         B         = x_cloudy.shape[0]
         x_cloudy_orig = x_cloudy.clone()
-        if getattr(self.model, "temporal_mode", "none") != "none":
+        if getattr(self.model, "uses_temporal_inputs", False):
             if temporal is None:
-                raise ValueError("temporal model: pass temporal=bridge.temporal_inputs(batch)")
+                raise ValueError("this model needs temporal=bridge.temporal_inputs(batch)")
             temporal = self.model.encode_temporal(temporal, sar)   # time-independent: encode once
 
         # --- Timestep grid: 1.0 → 0.0 in N+1 steps ---

@@ -1,6 +1,7 @@
 # Multi-temporal model: cloud mask input + a shared per-date encoder whose
 # features are fused by per-pixel attention over the input dates at the first
-# three encoder levels (models/backbone/temporal.py).  The composite stays the
+# three encoder levels (models/backbone/temporal.py), and the target
+# day-of-year added to the timestep embedding.  The composite stays the
 # bridge endpoint.  Merge after the TS overlay:
 #   --config configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml
 # Everything else (data, schedule, epochs, eval protocol) matches bridge_ts_v1.
@@ -12,3 +13,4 @@ model:
   mask_input: true
   temporal_mode: attention
   temporal_levels: 3
+  date_conditioning: true

@@ -9,3 +9,4 @@ paths:
 model:
   mask_input: true
   temporal_mode: concat
+  date_conditioning: true

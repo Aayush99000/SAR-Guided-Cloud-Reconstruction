@@ -19,6 +19,12 @@ collapses away.
     The stack, its masks and the date offsets are concatenated to the encoder
     input (baseline for the attention variant).
 
+``date_conditioning`` (independent of the mode)
+    The target's day-of-year is embedded and added to the diffusion timestep
+    embedding, so every time-conditioned NAFBlock (encoder, bottleneck and
+    decoder) knows the season being reconstructed.  The last layer is
+    zero-initialised, so a fresh model starts out identical to the baseline.
+
 The per-date features do not depend on the diffusion time, so the bridge
 sampler encodes them once per sample and reuses them at every step.
 """
@@ -81,6 +87,25 @@ class DateEmbedding(nn.Module):
         return self.mlp(feats)
 
 
+class TargetDateEmbedding(nn.Module):
+    """Target day-of-year (B,) → (B, dim), added to the timestep embedding.
+
+    Harmonics of the annual cycle; the output layer starts at zero.
+    """
+
+    def __init__(self, dim: int, n_harmonics: int = 4) -> None:
+        super().__init__()
+        self.register_buffer("k", 2 * math.pi * torch.arange(1, n_harmonics + 1, dtype=torch.float32),
+                             persistent=False)
+        self.mlp = nn.Sequential(nn.Linear(2 * n_harmonics, dim), nn.SiLU(), nn.Linear(dim, dim))
+        nn.init.zeros_(self.mlp[-1].weight)
+        nn.init.zeros_(self.mlp[-1].bias)
+
+    def forward(self, doy: torch.Tensor) -> torch.Tensor:
+        a = doy.float()[:, None] * self.k
+        return self.mlp(torch.cat([a.sin(), a.cos()], dim=-1))
+
+
 class TemporalEncoder(nn.Module):
     """Shared per-date encoder: (optical_t, mask_t, SAR_t, date_t) → features at each scale.
 
@@ -126,9 +151,14 @@ class TemporalEncoder(nn.Module):
 
 
 class TemporalFusion(nn.Module):
-    """Per-pixel multi-head attention from the optical encoder over the T input dates."""
+    """Per-pixel multi-head attention from the optical encoder over the T input dates.
 
-    def __init__(self, channels: int, num_heads: int) -> None:
+    The null token's value depends on the conditioning vector (timestep and,
+    with date conditioning, target date), so pixels cloudy in every date still
+    receive the target season.
+    """
+
+    def __init__(self, channels: int, num_heads: int, cond_dim: int) -> None:
         super().__init__()
         assert channels % num_heads == 0, "channels must be divisible by num_heads"
         self.heads, self.head_dim = num_heads, channels // num_heads
@@ -136,12 +166,16 @@ class TemporalFusion(nn.Module):
         self.kv = nn.Conv2d(channels, 2 * channels, 1)
         self.null_k = nn.Parameter(torch.zeros(num_heads, self.head_dim))
         self.null_v = nn.Parameter(torch.zeros(num_heads, self.head_dim))
+        self.null_v_cond = nn.Linear(cond_dim, channels)
+        nn.init.zeros_(self.null_v_cond.weight)
+        nn.init.zeros_(self.null_v_cond.bias)
         self.proj = nn.Conv2d(channels, channels, 1)
         nn.init.zeros_(self.proj.weight)
         nn.init.zeros_(self.proj.bias)
 
-    def forward(self, h: torch.Tensor, feats: torch.Tensor, bias: torch.Tensor) -> torch.Tensor:
-        """h: (B, C, H, W); feats: (B, T, C, H, W); bias: (B, T, 1, H, W) → (B, C, H, W)."""
+    def forward(self, h: torch.Tensor, feats: torch.Tensor, bias: torch.Tensor,
+                cond: torch.Tensor) -> torch.Tensor:
+        """h: (B, C, H, W); feats: (B, T, C, H, W); bias: (B, T, 1, H, W); cond: (B, D) → (B, C, H, W)."""
         B, T, C, H, W = feats.shape
         nh, d = self.heads, self.head_dim
         q = self.q(_channel_norm(h)).view(B, 1, nh, d, H, W)
@@ -150,5 +184,6 @@ class TemporalFusion(nn.Module):
         logits = (q * k).sum(3) * scale + bias.to(q.dtype)                        # (B, T, nh, H, W)
         null = (q[:, 0] * self.null_k.to(q.dtype)[None, :, :, None, None]).sum(2) * scale   # (B, nh, H, W)
         w = torch.cat([logits, null[:, None]], dim=1).float().softmax(dim=1).to(v.dtype)    # (B, T+1, nh, H, W)
-        out = (w[:, :T, :, None] * v).sum(1) + w[:, T, :, None] * self.null_v.to(v.dtype)[None, :, :, None, None]
+        null_v = self.null_v[None] + self.null_v_cond(cond.float()).view(B, nh, d)      # (B, nh, d)
+        out = (w[:, :T, :, None] * v).sum(1) + w[:, T, :, None] * null_v.to(v.dtype)[:, :, :, None, None]
         return h + self.proj(out.reshape(B, C, H, W))

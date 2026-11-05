@@ -12,7 +12,8 @@
 # uses the uniform loss from configs/sen12mscrts.yaml.
 #   sbatch -J bridge_ts_temporal scripts/slurm/02_train_ts.slurm temporal  # mask + attention over input dates
 #   (tsar_mask = target-date SAR + mask; temporal_concat = mask + concatenated dates;
-#    tsar_temporal = target-date SAR + temporal)
+#    tsar_temporal = target-date SAR + temporal;
+#    tsar_temporal_change = tsar_temporal + explicit SAR change gating)
 # Requires the cloud-mask index from 05_precompute_ts_clouds.slurm.
 # =============================================================================
 #SBATCH --job-name=bridge_ts
@@ -58,7 +59,8 @@ case "${EXP}" in
     temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml" ;;
     temporal_concat) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal_concat.yaml" ;;
     tsar_temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml" ;;
-    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_concat | tsar_temporal)"; exit 1 ;;
+    tsar_temporal_change) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml configs/sen12mscrts_sar_change.yaml" ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_concat | tsar_temporal | tsar_temporal_change)"; exit 1 ;;
 esac
 
 TOTAL_EPOCHS=100

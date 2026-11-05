@@ -202,6 +202,8 @@ class SAROpticalUNet(nn.Module):
         n_input:              Number of input dates T (temporal modes only).
         temporal_levels:      Encoder levels with temporal attention ("attention").
         date_conditioning:    Add the target day-of-year to the timestep embedding.
+        sar_change:           Give the temporal attention each input date's SAR change
+                              to the target date ("attention" + target-date SAR).
     """
 
     @classmethod
@@ -225,6 +227,7 @@ class SAROpticalUNet(nn.Module):
             n_input=int(cfg.data.get("ts", {}).get("n_input", 3)),
             temporal_levels=cfg.model.get("temporal_levels", 3),
             date_conditioning=cfg.model.get("date_conditioning", False),
+            sar_change=cfg.model.get("sar_change", False),
         )
 
     def __init__(
@@ -247,6 +250,7 @@ class SAROpticalUNet(nn.Module):
         n_input:             int       = 3,
         temporal_levels:     int       = 3,
         date_conditioning:   bool      = False,
+        sar_change:          bool      = False,
     ) -> None:
         super().__init__()
 
@@ -272,6 +276,12 @@ class SAROpticalUNet(nn.Module):
             raise ValueError(
                 f"temporal attention expects VV+VH per input date (+ optional target date): "
                 f"{2 * n_input} or {2 * (n_input + 1)} SAR channels, got {in_channels_sar}"
+            )
+        if sar_change and (temporal_mode != "attention" or in_channels_sar != 2 * (n_input + 1)):
+            raise ValueError(
+                "sar_change needs temporal_mode='attention' and the target date's SAR "
+                f"({2 * (n_input + 1)} SAR channels, data.ts.include_target_sar); got "
+                f"temporal_mode={temporal_mode!r}, {in_channels_sar} SAR channels"
             )
         self.bottleneck_type = bottleneck_type
         self.fusion_mode     = fusion_mode
@@ -338,6 +348,7 @@ class SAROpticalUNet(nn.Module):
         if temporal_mode == "attention":
             self.temporal_encoder = TemporalEncoder(
                 in_channels_optical, sar_per_date=2, channels=channels[:temporal_levels],
+                sar_change=sar_change,
             )
             self.temporal_fusion = nn.ModuleList([
                 TemporalFusion(channels[i], num_heads=max(1, channels[i] // 64), cond_dim=time_emb_dim)
@@ -692,4 +703,32 @@ if __name__ == "__main__":
         assert not torch.allclose(out_raw, out_dt), f"{mode}: input dates have no effect"
         assert not torch.allclose(out_raw, out_doy), f"{mode}: target date has no effect"
         print(f"  Temporal {mode:9s} check  PASSED  ✓")
+
+    # SAR change gating: needs the target date's SAR after the input dates'
+    sar_tgt = torch.randn(B, 2 * (T + 1), H, W, device=device)
+    m = SAROpticalUNet(
+        in_channels_optical=C_opt, in_channels_sar=2 * (T + 1), base_channels=32,
+        num_nafblocks=[1, 1, 1, 4], num_vim_blocks=1, time_emb_dim=64,
+        mask_input=True, temporal_mode="attention", n_input=T, sar_change=True,
+    ).to(device).eval()
+    for g in m.temporal_encoder.change_gate:
+        nn.init.normal_(g.weight, std=0.5)
+    with torch.no_grad():
+        # In the temporal encoder the target date's radar enters only through the change map
+        sar_moved = sar_tgt.clone()
+        sar_moved[:, 2 * T:] += 0.3
+        lv_a = m.temporal_encoder(temporal, sar_tgt)
+        lv_b = m.temporal_encoder(temporal, sar_moved)
+        out = m(x_t, t, x_cld, sar_tgt, mask, temporal=temporal)
+    assert out.shape == (B, C_opt, H, W)
+    assert not torch.allclose(lv_a[0][0], lv_b[0][0]), "SAR change does not reach the per-date features"
+    assert not torch.allclose(lv_a[0][1], lv_b[0][1]), "SAR change does not reach the attention bias"
+    try:
+        SAROpticalUNet(in_channels_optical=C_opt, in_channels_sar=2 * T, base_channels=32,
+                       num_nafblocks=[1, 1, 1, 4], num_vim_blocks=1, time_emb_dim=64,
+                       temporal_mode="attention", n_input=T, sar_change=True)
+        raise AssertionError("sar_change accepted SAR without the target date")
+    except ValueError:
+        pass
+    print(f"  SAR change gating check  PASSED  ✓")
     print()

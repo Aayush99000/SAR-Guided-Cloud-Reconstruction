@@ -75,6 +75,7 @@ model:
   temporal_mode: none             # "none" | "concat" | "attention" — feed each input date (SEN12MS-CR-TS only)
   temporal_levels: 3              # encoder levels with attention over dates ("attention")
   date_conditioning: false        # true = add the target day-of-year to the timestep embedding (SEN12MS-CR-TS only)
+  sar_change: false               # true = per-date SAR change to the target date gates the attention (needs tsar)
 
 # ---------------------------------------------------------------------------
 # Data  (SEN12MS-CR)

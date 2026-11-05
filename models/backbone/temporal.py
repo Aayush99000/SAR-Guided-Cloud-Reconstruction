@@ -19,6 +19,13 @@ collapses away.
     The stack, its masks and the date offsets are concatenated to the encoder
     input (baseline for the attention variant).
 
+``sar_change`` (attention mode, needs the target date's SAR)
+    For each input date, the change in backscatter between that date and the
+    target date (VV, VH; dB, after a 5×5 box filter against speckle).  It is
+    an extra input of the per-date encoder and, through a zero-initialised
+    1×1 conv per level, an attention bias: where the radar says the surface
+    changed, the model can learn to trust that date's optical pixels less.
+
 ``date_conditioning`` (independent of the mode)
     The target's day-of-year is embedded and added to the diffusion timestep
     embedding, so every time-conditioned NAFBlock (encoder, bottleneck and
@@ -114,13 +121,23 @@ class TemporalEncoder(nn.Module):
         sar_per_date:        SAR channels per date (2 = VV+VH).
         channels:            Feature width per encoder level (matches the U-Net's first levels).
         date_dim:            Width of the date embedding.
+        sar_change:          Add the per-date SAR change to the target date (input
+                             and attention bias); the SAR stack must end with the
+                             target date's pair.
     """
 
     def __init__(self, in_channels_optical: int, sar_per_date: int, channels: Sequence[int],
-                 date_dim: int = 128) -> None:
+                 date_dim: int = 128, sar_change: bool = False) -> None:
         super().__init__()
         self.sar_per_date = sar_per_date
-        self.input = nn.Conv2d(in_channels_optical + 1 + sar_per_date, channels[0], 1)
+        self.sar_change = sar_change
+        n_change = sar_per_date if sar_change else 0
+        self.input = nn.Conv2d(in_channels_optical + 1 + sar_per_date + n_change, channels[0], 1)
+        if sar_change:
+            self.change_gate = nn.ModuleList([nn.Conv2d(sar_per_date, 1, 1) for _ in channels])
+            for g in self.change_gate:
+                nn.init.zeros_(g.weight)
+                nn.init.zeros_(g.bias)
         self.date_emb = DateEmbedding(date_dim)
         self.date_proj = nn.ModuleList([nn.Linear(date_dim, c) for c in channels])
         self.blocks = nn.ModuleList([NAFBlock(c) for c in channels])
@@ -130,12 +147,24 @@ class TemporalEncoder(nn.Module):
     def forward(self, temporal: Dict[str, torch.Tensor], sar: torch.Tensor) -> List[TemporalLevel]:
         stack, masks = temporal["cloudy_stack"], temporal["input_masks"]
         B, T, _, H, W = stack.shape
+        s = self.sar_per_date
         # Input dates' SAR come first in the SAR stack; a target-date pair (if any) follows
-        sar_t = sar[:, : T * self.sar_per_date].reshape(B, T, self.sar_per_date, H, W)
-        x = torch.cat([stack, masks.to(stack.dtype), sar_t.to(stack.dtype)], dim=2).flatten(0, 1)
+        sar_t = sar[:, : T * s].reshape(B, T, s, H, W).flatten(0, 1)                # (B·T, s, H, W)
+        parts = [stack.flatten(0, 1), masks.flatten(0, 1).to(stack.dtype), sar_t.to(stack.dtype)]
+        change = None
+        if self.sar_change:
+            if sar.shape[1] < (T + 1) * s:
+                raise ValueError("sar_change needs the target date's SAR (data.ts.include_target_sar)")
+            smooth = lambda x: F.avg_pool2d(x.float(), 5, stride=1, padding=2, count_include_pad=False)
+            target_sar = smooth(sar[:, T * s:(T + 1) * s]).repeat_interleave(T, dim=0)
+            # SAR is normalised as (dB + 25) / 25, so 25·Δ is the change in dB; scale to dB / 10
+            change = 2.5 * (smooth(sar_t) - target_sar)                              # (B·T, s, H, W)
+            parts.append(change.to(stack.dtype))
+        x = torch.cat(parts, dim=1)
         e = self.date_emb(temporal["input_dt"], temporal["input_doy"],
                           temporal["target_doy"][:, None].expand(B, T)).flatten(0, 1)   # (B·T, D)
         cloudy = masks.flatten(0, 1).float()                                         # (B·T, 1, H, W)
+        change_mag = change.abs() if change is not None else None
 
         h = self.input(x)
         levels: List[TemporalLevel] = []
@@ -143,9 +172,13 @@ class TemporalEncoder(nn.Module):
             if i > 0:
                 h = self.downs[i - 1](h)
                 cloudy = F.avg_pool2d(cloudy, 2)
+                if change_mag is not None:
+                    change_mag = F.avg_pool2d(change_mag, 2)
             h = blk(h + self.date_proj[i](e).to(h.dtype)[:, :, None, None])
             # log(clear fraction): −∞-like for fully cloudy pixels, 0 for clear ones
             bias = torch.log((1.0 - cloudy).clamp_min(1e-4))
+            if change_mag is not None:
+                bias = bias + self.change_gate[i](change_mag)    # learned trust from radar change
             levels.append((h.unflatten(0, (B, T)), bias.unflatten(0, (B, T))))
         return levels
 

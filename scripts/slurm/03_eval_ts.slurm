@@ -39,7 +39,8 @@ case "${EXP}" in
     temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml" ;;
     temporal_concat) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal_concat.yaml" ;;
     tsar_temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml" ;;
-    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_concat | tsar_temporal)"; exit 1 ;;
+    tsar_temporal_change) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml configs/sen12mscrts_sar_change.yaml" ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_concat | tsar_temporal | tsar_temporal_change)"; exit 1 ;;
 esac
 CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
 TAG="${TAG:-}"

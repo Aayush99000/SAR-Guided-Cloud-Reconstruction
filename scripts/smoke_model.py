@@ -82,6 +82,10 @@ def main() -> None:
         g = sum(f.proj.weight.abs().sum().item() for f in m.temporal_fusion)
         print(f"[train] |temporal fusion proj| after training {g:.3e}")
         assert g > 0, "temporal fusion stayed at its zero initialisation"
+    if m.temporal_mode == "attention" and m.temporal_encoder.sar_change:
+        g = sum(c.weight.abs().sum().item() for c in m.temporal_encoder.change_gate)
+        print(f"[train] |SAR change gate| after training {g:.3e}")
+        assert g > 0, "SAR change gate stayed at its zero initialisation"
     if m.date_conditioning:
         g = m.date_emb.mlp[-1].weight.abs().sum().item()
         print(f"[train] |date embedding output layer| after training {g:.3e}")

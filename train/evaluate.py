@@ -107,8 +107,6 @@ def load_model(ckpt_path: Path, cfg, device: torch.device) -> DiffusionBridge:
     )
     criterion = CloudAwareLoss(
         alpha=cfg.loss.alpha,
-        lambda_mse=cfg.loss.lambda_mse,
-        lambda_ssim=cfg.loss.lambda_ssim,
     )
     bridge = DiffusionBridge(
         model=unet,

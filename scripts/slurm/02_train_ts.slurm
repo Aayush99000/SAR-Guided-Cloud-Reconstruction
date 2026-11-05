@@ -6,7 +6,10 @@
 # experiment (checkpoints go to outputs/checkpoints/bridge_ts_<exp>):
 #   sbatch -J bridge_ts_v1   scripts/slurm/02_train_ts.slurm v1    # 3 input dates' SAR (6ch)
 #   sbatch -J bridge_ts_tsar scripts/slurm/02_train_ts.slurm tsar  # + target-date SAR (8ch)
-#   sbatch -J bridge_ts_mask scripts/slurm/02_train_ts.slurm mask  # v1 + cloud mask as network input
+#   sbatch -J bridge_ts_loss scripts/slurm/02_train_ts.slurm loss  # v1 with the uniform TS loss (alpha 0.5)
+#   sbatch -J bridge_ts_mask scripts/slurm/02_train_ts.slurm mask  # loss + cloud mask as network input
+# v1 / tsar pin the old cloud-weighted loss (alpha 0.8); every other experiment
+# uses the uniform loss from configs/sen12mscrts.yaml.
 #   sbatch -J bridge_ts_temporal scripts/slurm/02_train_ts.slurm temporal  # mask + attention over input dates
 #   (tsar_mask = target-date SAR + mask; temporal_concat = mask + concatenated dates;
 #    tsar_temporal = target-date SAR + temporal)
@@ -46,14 +49,16 @@ mkdir -p logs/slurm
 
 EXP="${1:-v1}"
 case "${EXP}" in
-    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
-    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml" ;;
+    # v1 / tsar were trained before the TS loss became uniform: keep their alpha
+    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml loss.alpha=0.8" ;;
+    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml loss.alpha=0.8" ;;
+    loss) EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
     mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_mask.yaml" ;;
     tsar_mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_mask.yaml" ;;
     temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml" ;;
     temporal_concat) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal_concat.yaml" ;;
     tsar_temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml" ;;
-    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | mask | tsar_mask | temporal | temporal_concat | tsar_temporal)"; exit 1 ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_concat | tsar_temporal)"; exit 1 ;;
 esac
 
 TOTAL_EPOCHS=100

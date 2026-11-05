@@ -25,14 +25,16 @@ set -euo pipefail
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
 EXP="${1:-v1}"
 case "${EXP}" in
-    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
-    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml" ;;
+    # v1 / tsar were trained before the TS loss became uniform: keep their alpha
+    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml loss.alpha=0.8" ;;
+    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml loss.alpha=0.8" ;;
+    loss) EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
     mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_mask.yaml" ;;
     tsar_mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_mask.yaml" ;;
     temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml" ;;
     temporal_concat) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal_concat.yaml" ;;
     tsar_temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml" ;;
-    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | mask | tsar_mask | temporal | temporal_concat | tsar_temporal)"; exit 1 ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_concat | tsar_temporal)"; exit 1 ;;
 esac
 CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
 JUDGE="${JUDGE:-${SCRATCH}/outputs/checkpoints/judge/best.ckpt}"

@@ -482,6 +482,7 @@ def run_inference(
                 cloud_mask=cloud_mask,
                 num_steps=nfe,
                 composite=cfg.data.get("composite_output", True),
+                temporal=bridge.temporal_inputs(batch),
             )
 
         x_pred_f  = x_pred.float().clamp(0.0, 1.0)

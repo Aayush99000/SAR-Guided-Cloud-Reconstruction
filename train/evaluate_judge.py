@@ -109,7 +109,8 @@ def main() -> None:
             cloud_mask = batch["cloud_mask"].to(device, non_blocking=True)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_amp):
                 x_pred = bridge.sample(x_cloudy, sar, cloud_mask=cloud_mask, num_steps=args.nfe,
-                                       composite=cfg.data.get("composite_output", True))
+                                       composite=cfg.data.get("composite_output", True),
+                                       temporal=bridge.temporal_inputs(batch))
             x_pred = x_pred.float().clamp(0, 1)
 
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=device.type == "cuda"):

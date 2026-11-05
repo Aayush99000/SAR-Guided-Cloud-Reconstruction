@@ -67,6 +67,7 @@ import torch
 import torch.nn as nn
 
 from .noise_schedule import BridgeNoiseSchedule
+from ..backbone.temporal import TEMPORAL_KEYS
 from ..cloud_aware_loss import CloudAwareLoss
 
 log = logging.getLogger(__name__)
@@ -171,6 +172,15 @@ class DiffusionBridge(nn.Module):
             f"(available: {list(batch.keys())})"
         )
 
+    def temporal_inputs(self, batch: Dict[str, Any]) -> Optional[Dict[str, torch.Tensor]]:
+        """Per-date inputs for a multi-temporal model, on self.device; None otherwise."""
+        if getattr(self.model, "temporal_mode", "none") == "none":
+            return None
+        missing = [k for k in TEMPORAL_KEYS if k not in batch]
+        if missing:
+            raise KeyError(f"temporal model needs batch keys {missing} (multi-temporal dataset only)")
+        return {k: batch[k].to(self.device, non_blocking=True) for k in TEMPORAL_KEYS}
+
     # ------------------------------------------------------------------
     # Forward process
     # ------------------------------------------------------------------
@@ -239,6 +249,7 @@ class DiffusionBridge(nn.Module):
         sar        = self._pick(batch, self._SAR_KEYS)
         _cm = batch.get("cloud_mask")
         cloud_mask = _cm if _cm is not None else batch.get("mask")  # optional
+        temporal   = self.temporal_inputs(batch)
 
         B = x_clean.shape[0]
 
@@ -251,7 +262,7 @@ class DiffusionBridge(nn.Module):
         # ---- 4. Predict x̂₀ -------------------------------------------
         # x_cloudy serves as x_cloudy_mean (single-observation mode).
         # Multi-temporal stacks would average along the time dimension first.
-        x_hat_0 = self.model(x_t, t, x_cloudy, sar, cloud_mask)
+        x_hat_0 = self.model(x_t, t, x_cloudy, sar, cloud_mask, temporal=temporal)
 
         # ---- 5. Cloud-aware loss  (CloudAwareLoss handles mask weights) -
         loss, breakdown = self.loss_fn(x_hat_0, x_clean, cloud_mask=cloud_mask)
@@ -280,6 +291,7 @@ class DiffusionBridge(nn.Module):
         x_cloudy:   torch.Tensor,
         sar:        torch.Tensor,
         cloud_mask: Optional[torch.Tensor] = None,
+        temporal:   Optional[Any]          = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """Single deterministic ODE reverse step.
 
@@ -308,6 +320,7 @@ class DiffusionBridge(nn.Module):
                         Used as x_cloudy_mean for the network.
             sar:        SAR image VV+VH               (B, 2, H, W).
             cloud_mask: Optional cloud binary mask    (B, 1, H, W).
+            temporal:   Per-date inputs or their cached encoding (temporal models).
 
         Returns:
             x_prev:  New state at t_prev              (B, C, H, W).
@@ -319,7 +332,7 @@ class DiffusionBridge(nn.Module):
         t_batch = self._broadcast_t(t, x_t.shape[0], x_t.device)
 
         # (a) Network prediction
-        x_hat_0 = self.model(x_t, t_batch, x_cloudy, sar, cloud_mask)
+        x_hat_0 = self.model(x_t, t_batch, x_cloudy, sar, cloud_mask, temporal=temporal)
 
         # (b) ODE step via BridgeNoiseSchedule
         x_prev = self.schedule.reverse_step(x_t, x_hat_0, t_batch, t_prev)
@@ -339,6 +352,7 @@ class DiffusionBridge(nn.Module):
         num_steps:        int  = 5,
         return_trajectory: bool = False,
         composite:        bool = True,
+        temporal:         Optional[Dict[str, torch.Tensor]] = None,
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[torch.Tensor]]]:
         """Full reverse-ODE inference: x_T → x̂₀ with hard-mask compositing.
 
@@ -377,6 +391,9 @@ class DiffusionBridge(nn.Module):
             composite:         Apply hard-mask compositing.  Disable when the
                                clear input pixels come from a different date
                                than the target (multi-temporal data).
+            temporal:          Per-date inputs for a multi-temporal model
+                               (``temporal_inputs(batch)``); encoded once and
+                               reused at every step.
 
         Returns:
             x_final: Reconstructed cloud-free image (B, C, H, W).
@@ -385,6 +402,10 @@ class DiffusionBridge(nn.Module):
         device    = x_cloudy.device
         B         = x_cloudy.shape[0]
         x_cloudy_orig = x_cloudy.clone()
+        if getattr(self.model, "temporal_mode", "none") != "none":
+            if temporal is None:
+                raise ValueError("temporal model: pass temporal=bridge.temporal_inputs(batch)")
+            temporal = self.model.encode_temporal(temporal, sar)   # time-independent: encode once
 
         # --- Timestep grid: 1.0 → 0.0 in N+1 steps ---
         timesteps = self.schedule.get_inference_steps(num_steps).to(device)  # (N+1,)
@@ -400,7 +421,7 @@ class DiffusionBridge(nn.Module):
             t_prev = timesteps[i + 1].expand(B)      # (B,) previous (smaller) time
 
             x_t, x_hat_0 = self.reverse_step(
-                x_t, t_cur, t_prev, x_cloudy, sar, cloud_mask
+                x_t, t_cur, t_prev, x_cloudy, sar, cloud_mask, temporal=temporal
             )
             x_hat_0_final = x_hat_0
 

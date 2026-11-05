@@ -44,7 +44,9 @@ The bridge needs a single cloudy endpoint, so ``cloudy`` is a cloud-aware
 composite of the inputs: each pixel comes from the least-cloudy input in which
 it is clear; pixels cloudy in every input take the input mean.  ``cloud_mask``
 marks those never-clear pixels.  The full stacks are returned as well
-(``cloudy_stack``, ``input_masks``) for models that consume all dates.
+(``cloudy_stack``, ``input_masks``) for models that consume all dates, with
+the acquisition dates as ``input_dt`` (signed offset from the target, years),
+``input_doy`` and ``target_doy`` (day-of-year fractions in [0, 1)).
 
 Normalisation follows UnCRtainTS ``rescale_method='default'``:
     S1: clip [-25, 0] dB  -> [0, 1]        S2: clip [0, 10000] -> [0, 1]
@@ -68,6 +70,10 @@ log = logging.getLogger(__name__)
 
 _SEASON_BY_MONTH = {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: "spring",
                     6: "summer", 7: "summer", 8: "summer", 9: "fall", 10: "fall", 11: "fall"}
+
+
+def _day_of_year(d: date) -> float:
+    return (d.timetuple().tm_yday - 1) / 365.25
 
 
 def _preprocess_s1(arr: np.ndarray) -> np.ndarray:
@@ -311,7 +317,15 @@ class SEN12MSCRTSDataset(Dataset):
                 tensors[name] = np.flip(a, axis=-1) if flip else a
         out = {k: torch.from_numpy(np.ascontiguousarray(v)) for k, v in tensors.items()}
 
+        # Acquisition dates for multi-temporal models: signed offset of each
+        # input from the target (years) and day-of-year fractions
         target_date = tile["s2_dates"][target]
+        t_day = date.fromisoformat(target_date)
+        in_days = [date.fromisoformat(tile["s2_dates"][t]) for t in inputs]
+        out["input_dt"] = torch.tensor([(d - t_day).days / 365.25 for d in in_days], dtype=torch.float32)
+        out["input_doy"] = torch.tensor([_day_of_year(d) for d in in_days], dtype=torch.float32)
+        out["target_doy"] = torch.tensor(_day_of_year(t_day), dtype=torch.float32)
+
         out["metadata"] = {
             "patch_id": f"{tile['key']}/p{patch}",
             "cloud_coverage": float(np.mean([coverage[t] for t in inputs])),
@@ -323,7 +337,7 @@ class SEN12MSCRTSDataset(Dataset):
             "target_date": target_date,
             "input_dates": [tile["s2_dates"][t] for t in inputs],
             "sar_dates": [tile["s1_dates"][t] for t in sar_dates],
-            "season": _SEASON_BY_MONTH[date.fromisoformat(target_date).month] if target_date else "",
+            "season": _SEASON_BY_MONTH[t_day.month],
             "region": tile["region"],
             "roi": tile["roi"],
             "tile": tile["tile"],

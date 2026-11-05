@@ -73,6 +73,8 @@ model:
   bottleneck_type: vim            # "vim" | "attention" | "none"
   fusion_mode: sfblock            # "sfblock" | "early_concat" | "none"
   mask_input: false               # true = feed the cloud mask to the network as an input channel
+  temporal_mode: none             # "none" | "concat" | "attention" — feed each input date (SEN12MS-CR-TS only)
+  temporal_levels: 3              # encoder levels with attention over dates ("attention")
 
 # ---------------------------------------------------------------------------
 # Data  (SEN12MS-CR)

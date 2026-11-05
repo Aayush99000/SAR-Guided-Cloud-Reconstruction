@@ -57,7 +57,8 @@ def main() -> None:
     with torch.no_grad():
         for batch in loader:
             x_c, x_0, sar, cm = (batch[n].to(device) for n in ("cloudy", "clean", "sar", "cloud_mask"))
-            pred = bridge.sample(x_c, sar, cloud_mask=cm, num_steps=args.nfe, composite=composite).float().clamp(0, 1)
+            pred = bridge.sample(x_c, sar, cloud_mask=cm, num_steps=args.nfe, composite=composite,
+                                 temporal=bridge.temporal_inputs(batch)).float().clamp(0, 1)
             for i in range(pred.shape[0]):
                 m = compute_metrics(pred[i:i + 1], x_0[i:i + 1].float())
                 meta = batch["metadata"][i]

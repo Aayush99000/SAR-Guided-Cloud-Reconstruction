@@ -14,6 +14,11 @@ Input to the optical encoder:
     cat(x_t, x_cloudy_mean, sar [, cloud_mask])  →  (B, 2·C_opt + C_sar [+ 1], H, W)
     The cloud mask channel is added when ``mask_input=True``.
 
+Multi-temporal conditioning (``temporal_mode``, see temporal.py) feeds every
+input date to the optical encoder: per-date features fused by per-pixel
+attention over dates at the first ``temporal_levels`` scales ("attention"), or
+the raw stack concatenated to the input ("concat").
+
 Output:
     Predicted clean image x_0  →  (B, C_opt, H, W)
 
@@ -38,7 +43,7 @@ Reference: Ebel et al., "DBER: Cross-Modal Cloud Removal", 2022 (DB-CR).
 from __future__ import annotations
 
 import math
-from typing import List, Optional
+from typing import Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -47,6 +52,7 @@ import torch.nn.functional as F
 from .nafblock import NAFBlock
 from .vim_ssm import VimBlock
 from .sfblock import SARFusionBlock
+from .temporal import TemporalEncoder, TemporalFusion, concat_channels, concat_features
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +193,10 @@ class SAROpticalUNet(nn.Module):
         mask_input:           Concatenate the cloud mask (1 = cloudy) to the
                               optical encoder input, so the network knows which
                               pixels of x_cloudy are observed and which are cloud.
+        temporal_mode:        "none" | "concat" | "attention" — how the individual
+                              input dates are fed to the network (see temporal.py).
+        n_input:              Number of input dates T (temporal modes only).
+        temporal_levels:      Encoder levels with temporal attention ("attention").
     """
 
     @classmethod
@@ -206,6 +216,9 @@ class SAROpticalUNet(nn.Module):
             bottleneck_type=cfg.model.get("bottleneck_type", "vim"),
             fusion_mode=cfg.model.get("fusion_mode", "sfblock"),
             mask_input=cfg.model.get("mask_input", False),
+            temporal_mode=cfg.model.get("temporal_mode", "none"),
+            n_input=int(cfg.data.get("ts", {}).get("n_input", 3)),
+            temporal_levels=cfg.model.get("temporal_levels", 3),
         )
 
     def __init__(
@@ -224,6 +237,9 @@ class SAROpticalUNet(nn.Module):
         bottleneck_type:     str       = "vim",
         fusion_mode:         str       = "sfblock",
         mask_input:          bool      = False,
+        temporal_mode:       str       = "none",
+        n_input:             int       = 3,
+        temporal_levels:     int       = 3,
     ) -> None:
         super().__init__()
 
@@ -241,11 +257,22 @@ class SAROpticalUNet(nn.Module):
             raise ValueError(
                 f"fusion_mode must be 'sfblock', 'early_concat', or 'none'; got {fusion_mode!r}"
             )
+        if temporal_mode not in ("none", "concat", "attention"):
+            raise ValueError(
+                f"temporal_mode must be 'none', 'concat', or 'attention'; got {temporal_mode!r}"
+            )
+        if temporal_mode == "attention" and in_channels_sar not in (2 * n_input, 2 * (n_input + 1)):
+            raise ValueError(
+                f"temporal attention expects VV+VH per input date (+ optional target date): "
+                f"{2 * n_input} or {2 * (n_input + 1)} SAR channels, got {in_channels_sar}"
+            )
         self.bottleneck_type = bottleneck_type
         self.fusion_mode     = fusion_mode
         self.mask_input      = mask_input
+        self.temporal_mode   = temporal_mode
 
         N = len(channel_mult)
+        assert 1 <= temporal_levels <= N, "temporal_levels must be in [1, len(channel_mult)]"
         assert len(num_nafblocks)     == N, "num_nafblocks length must match channel_mult"
         assert len(num_dec_nafblocks) == N, "num_dec_nafblocks length must match channel_mult"
         assert len(num_heads_sfblock) == N, "num_heads_sfblock length must match channel_mult"
@@ -285,13 +312,27 @@ class SAROpticalUNet(nn.Module):
         #   fusion_mode="sfblock"/"early_concat": SAR concatenated to input
         #   fusion_mode="none":                   optical-only input
         #   mask_input=True:                      + 1 cloud-mask channel
+        #   temporal_mode="concat":               + per-date stack, masks, dates
         # ----------------------------------------------------------------
         opt_in_ch = (
             2 * in_channels_optical + in_channels_sar
             if fusion_mode != "none"
             else 2 * in_channels_optical
         ) + int(mask_input)
+        if temporal_mode == "concat":
+            opt_in_ch += concat_channels(in_channels_optical, n_input)
         self.opt_input = nn.Conv2d(opt_in_ch, channels[0], 1, bias=False)
+
+        # Per-date encoder + per-level attention over dates (temporal_mode="attention")
+        self.temporal_levels = temporal_levels if temporal_mode == "attention" else 0
+        if temporal_mode == "attention":
+            self.temporal_encoder = TemporalEncoder(
+                in_channels_optical, sar_per_date=2, channels=channels[:temporal_levels],
+            )
+            self.temporal_fusion = nn.ModuleList([
+                TemporalFusion(channels[i], num_heads=max(1, channels[i] // 64))
+                for i in range(temporal_levels)
+            ])
 
         self.enc_blocks   = nn.ModuleList()
         self.enc_sfblocks = nn.ModuleList()
@@ -396,6 +437,16 @@ class SAROpticalUNet(nn.Module):
                                 mode="bilinear", align_corners=False)
         return src
 
+    def encode_temporal(self, temporal: Dict[str, torch.Tensor], sar: torch.Tensor):
+        """Encode the per-date inputs (batch keys in temporal.TEMPORAL_KEYS).
+
+        Independent of the diffusion time, so the bridge sampler calls this
+        once and passes the result to every ``forward`` step.
+        """
+        if self.temporal_mode == "concat":
+            return concat_features(temporal)
+        return self.temporal_encoder(temporal, self._align(sar, temporal["cloudy_stack"][:, 0]))
+
     # ------------------------------------------------------------------
     # Forward
     # ------------------------------------------------------------------
@@ -407,6 +458,7 @@ class SAROpticalUNet(nn.Module):
         x_cloudy_mean: torch.Tensor,
         sar:           torch.Tensor,
         cloud_mask:    Optional[torch.Tensor] = None,
+        temporal:      Optional[Union[Dict[str, torch.Tensor], torch.Tensor, list]] = None,
     ) -> torch.Tensor:
         """Predict clean image x_0 from noised state x_t.
 
@@ -417,11 +469,20 @@ class SAROpticalUNet(nn.Module):
             sar:           SAR image  (B, C_sar, H, W).
             cloud_mask:    Cloud binary mask  (B, 1, H, W), 1 = cloudy.
                            Required when ``mask_input=True``; ignored otherwise.
+            temporal:      Per-date inputs (dict of temporal.TEMPORAL_KEYS) or the
+                           output of ``encode_temporal``.  Required when
+                           ``temporal_mode != "none"``; ignored otherwise.
 
         Returns:
             Predicted clean image  (B, C_opt, H, W).
         """
         t_emb = self.time_emb(t)      # (B, time_emb_dim)
+
+        if self.temporal_mode != "none":
+            if temporal is None:
+                raise ValueError(f"temporal_mode={self.temporal_mode!r} but no temporal inputs were passed")
+            if isinstance(temporal, dict):
+                temporal = self.encode_temporal(temporal, sar)
 
         # ---- SAR encoder ------------------------------------------------
         # Only run when SFBlock fusion is active; other modes ignore sar_feats.
@@ -446,6 +507,8 @@ class SAROpticalUNet(nn.Module):
             if cloud_mask is None:
                 raise ValueError("mask_input=True but no cloud_mask was passed")
             opt_in.append(self._align(cloud_mask.to(x_t.dtype), x_t))
+        if self.temporal_mode == "concat":
+            opt_in.append(self._align(temporal.to(x_t.dtype), x_t))
         h = self.opt_input(torch.cat(opt_in, dim=1))
 
         enc_skips: List[torch.Tensor] = []
@@ -456,7 +519,10 @@ class SAROpticalUNet(nn.Module):
             # SFBlock fuses SAR encoder features; identity for other modes
             if self.fusion_mode == "sfblock":
                 h = self.enc_sfblocks[i](h, sar_feats[i])
-            enc_skips.append(h)            # skip_i  after optional SAR fusion
+            # Attention over the individual input dates at the first levels
+            if i < self.temporal_levels:
+                h = self.temporal_fusion[i](h, *temporal[i])
+            enc_skips.append(h)            # skip_i  after optional SAR / temporal fusion
             if i < self.num_levels - 1:
                 h = self.enc_downs[i](h)
 
@@ -570,4 +636,34 @@ if __name__ == "__main__":
         raise AssertionError("mask_input=True accepted a missing cloud_mask")
     except ValueError:
         pass
-    print(f"  Mask conditioning check  PASSED  ✓\n")
+    print(f"  Mask conditioning check  PASSED  ✓")
+
+    # Temporal modes: shapes, encode-once caching, and that the dates reach the output
+    T = 3
+    temporal = {
+        "cloudy_stack": torch.rand(B, T, C_opt, H, W, device=device),
+        "input_masks":  torch.randint(0, 2, (B, T, 1, H, W), device=device).float(),
+        "input_dt":     torch.tensor([[-0.3, -0.2, -0.1]] * B, device=device),
+        "input_doy":    torch.tensor([[0.05, 0.1, 0.15]] * B, device=device),
+        "target_doy":   torch.tensor([0.3] * B, device=device),
+    }
+    sar_t = torch.randn(B, 2 * T, H, W, device=device)
+    for mode in ("concat", "attention"):
+        m = SAROpticalUNet(
+            in_channels_optical=C_opt, in_channels_sar=2 * T, base_channels=32,
+            num_nafblocks=[1, 1, 1, 4], num_vim_blocks=1, time_emb_dim=64,
+            mask_input=True, temporal_mode=mode, n_input=T,
+        ).to(device).eval()
+        if mode == "attention":   # zero-initialised fusion: perturb it so the dates matter
+            for f in m.temporal_fusion:
+                nn.init.normal_(f.proj.weight, std=0.02)
+        with torch.no_grad():
+            out_raw = m(x_t, t, x_cld, sar_t, mask, temporal=temporal)
+            out_enc = m(x_t, t, x_cld, sar_t, mask, temporal=m.encode_temporal(temporal, sar_t))
+            shifted = {**temporal, "input_dt": temporal["input_dt"] - 0.5}
+            out_dt  = m(x_t, t, x_cld, sar_t, mask, temporal=shifted)
+        assert out_raw.shape == (B, C_opt, H, W)
+        assert torch.allclose(out_raw, out_enc, atol=1e-5), f"{mode}: cached encoding differs"
+        assert not torch.allclose(out_raw, out_dt), f"{mode}: input dates have no effect"
+        print(f"  Temporal {mode:9s} check  PASSED  ✓")
+    print()

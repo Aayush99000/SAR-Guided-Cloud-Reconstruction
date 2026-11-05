@@ -7,7 +7,9 @@
 #   sbatch -J bridge_ts_v1   scripts/slurm/02_train_ts.slurm v1    # 3 input dates' SAR (6ch)
 #   sbatch -J bridge_ts_tsar scripts/slurm/02_train_ts.slurm tsar  # + target-date SAR (8ch)
 #   sbatch -J bridge_ts_mask scripts/slurm/02_train_ts.slurm mask  # v1 + cloud mask as network input
-#   (tsar_mask = target-date SAR + cloud mask input)
+#   sbatch -J bridge_ts_temporal scripts/slurm/02_train_ts.slurm temporal  # mask + attention over input dates
+#   (tsar_mask = target-date SAR + mask; temporal_concat = mask + concatenated dates;
+#    tsar_temporal = target-date SAR + temporal)
 # Requires the cloud-mask index from 05_precompute_ts_clouds.slurm.
 # =============================================================================
 #SBATCH --job-name=bridge_ts
@@ -48,7 +50,10 @@ case "${EXP}" in
     tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml" ;;
     mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_mask.yaml" ;;
     tsar_mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_mask.yaml" ;;
-    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | mask | tsar_mask)"; exit 1 ;;
+    temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml" ;;
+    temporal_concat) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal_concat.yaml" ;;
+    tsar_temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml" ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | mask | tsar_mask | temporal | temporal_concat | tsar_temporal)"; exit 1 ;;
 esac
 
 TOTAL_EPOCHS=100

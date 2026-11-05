@@ -453,6 +453,7 @@ def validate(
                     cloud_mask=cloud_mask,
                     num_steps=nfe,
                     composite=cfg.data.get("composite_output", True),
+                    temporal=bridge.temporal_inputs(batch),
                 )
 
             # Float32 for all metrics

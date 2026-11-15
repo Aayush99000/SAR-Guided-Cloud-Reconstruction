@@ -19,6 +19,7 @@ training:
   early_stopping_patience: 15  # stop if val PSNR doesn't improve for this many epochs
   mixed_precision: true           # bfloat16 autocast on CUDA (no-op on CPU)
   ema_decay: 0.9999
+  ema_warmup: true                # ramp the decay as min(ema_decay, (1+n)/(10+n)); runs before Nov 2026 had none
   resume: null                    # path to checkpoint, or null
 
 # ---------------------------------------------------------------------------

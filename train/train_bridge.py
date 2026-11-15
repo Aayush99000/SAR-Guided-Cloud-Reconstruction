@@ -60,12 +60,17 @@ class EMA:
     inference time to temporarily swap the live weights for the EMA weights.
 
     Args:
-        model: The ``nn.Module`` whose parameters are tracked.
-        decay: EMA coefficient.  0.9999 is typical for image generation.
+        model:  The ``nn.Module`` whose parameters are tracked.
+        decay:  EMA coefficient.  0.9999 is typical for image generation.
+        warmup: Ramp the coefficient as min(decay, (1 + n) / (10 + n)) over the
+                first n updates.  Without it, 0.9999 keeps ~44% of the random
+                initialisation after 8k steps and early val PSNR is meaningless.
     """
 
-    def __init__(self, model: nn.Module, decay: float = 0.9999) -> None:
+    def __init__(self, model: nn.Module, decay: float = 0.9999, warmup: bool = False) -> None:
         self.decay = decay
+        self.warmup = warmup
+        self.num_updates = 0
         # Always kept as float32 for numerical stability
         self.shadow: Dict[str, torch.Tensor] = {
             k: v.detach().clone().float()
@@ -76,6 +81,9 @@ class EMA:
     def update(self, model: nn.Module) -> None:
         """Blend model parameters into shadow:  shadow = decay·shadow + (1−decay)·param."""
         d = self.decay
+        if self.warmup:
+            d = min(d, (1 + self.num_updates) / (10 + self.num_updates))
+        self.num_updates += 1
         for name, param in model.state_dict().items():
             if name not in self.shadow:
                 # New key (e.g. from dynamic module) — just copy
@@ -185,6 +193,7 @@ def save_checkpoint(
             "scheduler":     scheduler.state_dict(),
             "scaler":        scaler.state_dict(),
             "ema":           ema.state_dict(),
+            "ema_updates":   ema.num_updates,
             "metrics":       metrics,
             "best_val_psnr": best_val_psnr,
         },
@@ -213,6 +222,8 @@ def load_checkpoint(
     if scaler_state:  # skip if saved from a disabled (bfloat16) instance
         scaler.load_state_dict(scaler_state)
     ema.load_state_dict(ckpt["ema"])
+    # Checkpoints from before the warmup: treat the EMA as fully warmed up
+    ema.num_updates = int(ckpt.get("ema_updates", 10**9))
     start_epoch = int(ckpt["epoch"]) + 1
     best_val_psnr = float(ckpt.get("best_val_psnr", -float("inf")))
     log.info(
@@ -253,7 +264,7 @@ def build_model(cfg, device: torch.device) -> Tuple[DiffusionBridge, EMA]:
     n_params = sum(p.numel() for p in bridge.parameters() if p.requires_grad)
     log.info("DiffusionBridge | %.2f M trainable parameters", n_params / 1e6)
 
-    ema = EMA(bridge, decay=cfg.training.ema_decay)
+    ema = EMA(bridge, decay=cfg.training.ema_decay, warmup=cfg.training.get("ema_warmup", False))
     return bridge, ema
 
 

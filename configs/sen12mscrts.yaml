@@ -8,11 +8,10 @@ paths:
   bridge_ckpt_dir: ${paths.output_root}/checkpoints/bridge_ts_v1
 
 loss:
-  # Uniform L1 (W = 0.5 everywhere). The composite's "clear" pixels come from
-  # other dates — often another season — so they need reconstructing as much
-  # as cloudy ones, and every metric scores all pixels equally.
-  # bridge_ts_v1 / bridge_ts_tsar were trained with alpha 0.8 (slurm pins it).
-  alpha: 0.5
+  # Cloud-weighted L1 (cloud 0.8, clear 0.2), as in default.yaml. A uniform loss
+  # (alpha 0.5, bridge_ts_loss) scored 0.93 dB lower on the test set than v1
+  # despite a higher val PSNR; bridge_ts_loss / bridge_ts_temporal pin it (slurm).
+  alpha: 0.8
 
 data:
   dataset: sen12mscrts

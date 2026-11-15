@@ -7,7 +7,7 @@
 #                              UnCRtainTS fixed_sampler with min_cov=0 / max_cov=1
 # Both use eval_target_policy=least_cloudy, eval_input_policy=first.
 #
-# First argument picks the experiment (v1 | tsar), matching 02_train_ts.slurm:
+# First argument picks the experiment (v1 | tsar | ..., see 02_train_ts.slurm):
 #   sbatch scripts/slurm/03_eval_ts.slurm tsar
 # Override checkpoint:
 #   sbatch --export=ALL,CKPT=/path/to/epoch_0100.ckpt scripts/slurm/03_eval_ts.slurm v1
@@ -30,17 +30,18 @@ set -euo pipefail
 SCRATCH="/scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction"
 EXP="${1:-v1}"
 case "${EXP}" in
-    # v1 / tsar were trained before the TS loss became uniform: keep their alpha
-    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml loss.alpha=0.8" ;;
-    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml loss.alpha=0.8" ;;
-    loss) EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
+    v1)   EXTRA_CONFIGS="configs/sen12mscrts.yaml" ;;
+    tsar) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml" ;;
+    # loss / temporal were trained with the uniform loss (alpha 0.5): keep it
+    loss) EXTRA_CONFIGS="configs/sen12mscrts.yaml loss.alpha=0.5" ;;
     mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_mask.yaml" ;;
     tsar_mask) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_mask.yaml" ;;
-    temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml" ;;
+    temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml loss.alpha=0.5" ;;
+    temporal_a08) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal.yaml" ;;
     temporal_concat) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_temporal_concat.yaml" ;;
     tsar_temporal) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml" ;;
     tsar_temporal_change) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml configs/sen12mscrts_sar_change.yaml" ;;
-    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_concat | tsar_temporal | tsar_temporal_change)"; exit 1 ;;
+    *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_a08 | temporal_concat | tsar_temporal | tsar_temporal_change)"; exit 1 ;;
 esac
 CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
 TAG="${TAG:-}"

@@ -12,9 +12,10 @@ Conventions
 SAM is computed spectrally across all C channels; it is the primary metric
 for multi-band fidelity in the remote-sensing community.
 
-SSIM is implemented in pure PyTorch (equivalent to Wang et al. 2004 with
-data_range=1.0).  If torchmetrics or skimage are installed they can be used
-as drop-in alternatives; see the ``ssim`` docstring.
+SSIM is implemented in pure PyTorch (Wang et al. 2004 with data_range=1.0).
+It zero-pads the image borders, which pulls edge windows down slightly;
+``ssim_ref`` is scikit-image's reference implementation (borders cropped),
+reported alongside it for comparison with published numbers.
 
 LPIPS requires the ``lpips`` package and operates on the first 3 channels
 (RGB proxy).  A module-level cache avoids re-loading the VGG weights on
@@ -74,11 +75,9 @@ def ssim(
 ) -> float:
     """Structural Similarity Index averaged over batch and channels.
 
-    Pure-PyTorch implementation equivalent to ``skimage.metrics.structural_similarity``
-    with ``data_range=1.0, multichannel=True``.  To use torchmetrics instead::
-
-        from torchmetrics.functional import structural_similarity_index_measure
-        score = structural_similarity_index_measure(pred, target, data_range=1.0).item()
+    Same formula as ``skimage.metrics.structural_similarity`` with Gaussian
+    weights, but the borders are zero-padded instead of cropped, so scores are
+    slightly lower than ``ssim_ref``.
 
     Args:
         pred, target: (B, C, H, W) in [0, data_range].
@@ -111,6 +110,23 @@ def ssim(
         num   = (2.0 * mu12 + C1) * (2.0 * sigma12 + C2)
         denom = (mu1_sq + mu2_sq + C1) * (sigma1_sq + sigma2_sq + C2) + 1e-8
         return (num / denom).mean().item()
+
+
+def ssim_ref(pred: torch.Tensor, target: torch.Tensor, data_range: float = 1.0) -> float:
+    """SSIM from scikit-image, averaged over batch and channels.
+
+    ``gaussian_weights=True, sigma=1.5, use_sample_covariance=False`` are the
+    settings that reproduce Wang et al. (2004); borders are cropped, not padded.
+    """
+    from skimage.metrics import structural_similarity
+
+    p = pred.detach().float().cpu().numpy()
+    t = target.detach().float().cpu().numpy()
+    return float(sum(
+        structural_similarity(t[i], p[i], data_range=data_range, channel_axis=0,
+                              gaussian_weights=True, sigma=1.5, use_sample_covariance=False)
+        for i in range(p.shape[0])
+    ) / p.shape[0])
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +252,7 @@ def compute_metrics(
     out: Dict[str, float] = {
         "psnr": psnr(pred, target),
         "ssim": ssim(pred, target),
+        "ssim_ref": ssim_ref(pred, target),
         "mae":  mae(pred, target),
         "sam":  sam(pred, target),
     }

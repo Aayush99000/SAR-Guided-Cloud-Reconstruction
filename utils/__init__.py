@@ -1,6 +1,7 @@
 from .metrics import (
     psnr,
     ssim,
+    ssim_ref,
     mae,
     sam,
     lpips_score,
@@ -22,6 +23,7 @@ from .visualization import (
 __all__ = [
     "psnr",
     "ssim",
+    "ssim_ref",
     "mae",
     "sam",
     "lpips_score",

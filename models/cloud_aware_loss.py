@@ -48,8 +48,8 @@ def _ssim_map(
     """Per-pixel SSIM map (B, C, H, W).
 
     Values close to 1 indicate high structural similarity; close to -1 low.
-    Boundary pixels are handled by reflect-padding before convolution so the
-    spatial resolution is preserved exactly.
+    Boundary pixels are handled by zero-padding the convolution so the spatial
+    resolution is preserved exactly.
     """
     out_dtype = pred.dtype
     pred, target = pred.float(), target.float()

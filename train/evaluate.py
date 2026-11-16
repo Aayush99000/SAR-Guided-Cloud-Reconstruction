@@ -80,6 +80,7 @@ _METRIC_FMTS: Dict[str, Tuple[str, str, str]] = {
     # key: (display_name, format_str, direction)
     "psnr":       ("PSNR (dB)", "{:6.2f}",  "↑"),
     "ssim":       ("SSIM",      "{:6.4f}",  "↑"),
+    "ssim_ref":   ("SSIM-ski",  "{:6.4f}",  "↑"),
     "mae":        ("MAE",       "{:7.5f}",  "↓"),
     "sam":        ("SAM (°)",   "{:6.3f}",  "↓"),
     "lpips":      ("LPIPS",     "{:6.4f}",  "↓"),

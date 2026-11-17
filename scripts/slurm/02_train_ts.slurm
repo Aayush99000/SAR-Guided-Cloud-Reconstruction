@@ -130,13 +130,33 @@ if [[ "${CURRENT_EPOCH}" -ge "${TOTAL_EPOCHS}" ]]; then
     if [[ -f "${CKPT_DIR}/.eval_submitted" ]]; then
         echo "[INFO] Evaluation already submitted ($(cat "${CKPT_DIR}/.eval_submitted"))"
     else
-        sbatch -J "eval_ts_${EXP}${RUN_SUFFIX}" "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" "${EXP}" "${SPLIT}" | tee "${CKPT_DIR}/.eval_submitted"
+        # Retry while the submit limit is full (an array of 2 needs 2 free slots)
+        for attempt in $(seq 1 120); do
+            if EVAL_JOB=$(sbatch -J "eval_ts_${EXP}${RUN_SUFFIX}" "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" "${EXP}" "${SPLIT}" 2>&1); then
+                echo "${EVAL_JOB}" | tee "${CKPT_DIR}/.eval_submitted"
+                break
+            fi
+            echo "[WARN] Could not submit the evaluation (attempt ${attempt}): ${EVAL_JOB}"
+            sleep 60
+        done
     fi
     exit 0
 fi
 
-NEXT_JOB=$(sbatch -J "${NAME}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}" 2>&1)
-echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
+# Pre-schedule the next session. sbatch fails while the per-user submit limit
+# (8 on gpu) is full, which used to end the chain under set -e; retry in the
+# background for up to 2 h while this session trains.
+(
+    for attempt in $(seq 1 120); do
+        if NEXT_JOB=$(sbatch -J "${NAME}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}" 2>&1); then
+            echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
+            exit 0
+        fi
+        echo "[WARN] Could not pre-schedule the next session (attempt ${attempt}): ${NEXT_JOB}"
+        sleep 60
+    done
+    echo "[ERROR] Next session never scheduled; resubmit by hand: sbatch -J ${NAME} ${THIS_SCRIPT} ${EXP} ${SPLIT}"
+) &
 
 if [[ -f "${LAST_CKPT}" ]]; then
     CKPT_ARG="--resume ${LAST_CKPT}"

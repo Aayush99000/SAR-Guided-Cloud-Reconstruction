@@ -52,6 +52,7 @@ def _base(cfg, split: str) -> SEN12MSCRTSDataset:
         cfg.paths.data_root, split=split, mask_dir=cfg.paths.get("ts_mask_dir", None),
         optical_bands=list(cfg.data.optical_bands),
         val_tiles=list(ts.val_tiles) if ts.get("val_tiles") else None,
+        split_protocol=ts.get("split_protocol", "official"),
         augment=False,
     )
 

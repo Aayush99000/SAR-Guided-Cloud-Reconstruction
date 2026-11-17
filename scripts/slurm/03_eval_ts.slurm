@@ -9,6 +9,8 @@
 #
 # First argument picks the experiment (v1 | tsar | ..., see 02_train_ts.slurm):
 #   sbatch scripts/slurm/03_eval_ts.slurm tsar
+# Optional second argument official (default) | legacy, as in 02_train_ts.slurm;
+# legacy evaluates the pre-Nov-2026 checkpoints (bridge_ts_<exp>, results ts_<exp>).
 # Override checkpoint:
 #   sbatch --export=ALL,CKPT=/path/to/epoch_0100.ckpt scripts/slurm/03_eval_ts.slurm v1
 # Variant run (extra overrides, results under ts_<exp>_<tag>):
@@ -43,11 +45,19 @@ case "${EXP}" in
     tsar_temporal_change) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml configs/sen12mscrts_sar_change.yaml" ;;
     *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_a08 | temporal_concat | tsar_temporal | tsar_temporal_change)"; exit 1 ;;
 esac
-CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
+# Second argument: official (default; UnCRtainTS split, runs named *_official) or
+# legacy (the pre-Nov-2026 split that trained on copies of three test tiles).
+SPLIT="${2:-official}"
+case "${SPLIT}" in
+    official) RUN_SUFFIX="_official" ;;
+    legacy)   RUN_SUFFIX=""; EXTRA_CONFIGS="${EXTRA_CONFIGS} data.ts.split_protocol=legacy" ;;
+    *)        echo "[ERROR] unknown split '${SPLIT}' (expected official | legacy)"; exit 1 ;;
+esac
+CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}${RUN_SUFFIX}/best.ckpt}"
 TAG="${TAG:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 NFE_LIST="${NFE_LIST:-1 3 5 10}"
-RUN="ts_${EXP}${TAG:+_${TAG}}"
+RUN="ts_${EXP}${RUN_SUFFIX}${TAG:+_${TAG}}"
 BACKUP_ROOT="/home/katoch.aa/SAR-Diffusion-Bridge/results/eval_${RUN}"
 
 case "${SLURM_ARRAY_TASK_ID:-0}" in

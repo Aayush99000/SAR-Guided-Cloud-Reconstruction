@@ -68,6 +68,21 @@ from .sen12mscr_dataset import S2_RGB_NIR_BANDS
 
 log = logging.getLogger(__name__)
 
+# Official splits, as hard-coded in the UnCRtainTS loader ("region/ROI/tile" keys).
+# The TUM train archives also contain byte-identical copies of the first three
+# test tiles, so training on everything under train/ leaks 716 test patches.
+OFFICIAL_TEST_TILES = (
+    "africa/ROIs2017/32", "america/ROIs1158/106", "asiaEast/ROIs1868/73",
+    "africa/ROIs2017/140", "america/ROIs1970/132", "asiaEast/ROIs1868/119",
+    "asiaEast/ROIs1970/139", "asiaWest/ROIs1868/100", "europa/ROIs1868/142",
+    "europa/ROIs1970/20", "europa/ROIs2017/103", "europa/ROIs2017/108",
+    "europa/ROIs2017/63",
+)
+OFFICIAL_VAL_TILES = (
+    "africa/ROIs2017/22", "america/ROIs1970/65", "asiaEast/ROIs2017/117",
+    "asiaWest/ROIs1868/127", "europa/ROIs1868/17",
+)
+
 _SEASON_BY_MONTH = {12: "winter", 1: "winter", 2: "winter", 3: "spring", 4: "spring", 5: "spring",
                     6: "summer", 7: "summer", 8: "summer", 9: "fall", 10: "fall", 11: "fall"}
 
@@ -92,8 +107,12 @@ class SEN12MSCRTSDataset(Dataset):
     Args:
         root:            Dataset root containing ``train/`` and ``test/``.
         split:           "train", "val" or "test".  "train" and "val" are
-                         carved from the official train tiles by holding out
+                         carved from the tiles under ``train/`` by holding out
                          whole tiles; "test" is the official test split.
+        split_protocol:  "official" drops the official test tiles from
+                         train/val and holds out the official val tiles.
+                         "legacy" (runs before Nov 2026) trains on every tile
+                         under ``train/``, including the three test copies.
         mask_dir:        Output of precompute_ts_clouds.py (default
                          ``<root>/cloud_masks``).
         n_input:         Number of input dates T.
@@ -101,7 +120,8 @@ class SEN12MSCRTSDataset(Dataset):
         target_policy, input_policy, exclude_target_from_inputs: see module doc.
         clear_thresh:    Coverage below which a date counts as clear.
         val_tiles:       Explicit "region/roi/tile" keys for the val split.
-                         Default: the last tile (sorted) of each region.
+                         Default: OFFICIAL_VAL_TILES ("official") or the last
+                         tile (sorted) of each region ("legacy").
         augment:         Random flips / 90° rotations (default: train only).
         regions:         Restrict to these regions (default: all).
     """
@@ -123,9 +143,12 @@ class SEN12MSCRTSDataset(Dataset):
         val_tiles: Optional[Sequence[str]] = None,
         augment: Optional[bool] = None,
         regions: Optional[Sequence[str]] = None,
+        split_protocol: str = "official",
     ) -> None:
         if split not in ("train", "val", "test"):
             raise ValueError(f"split must be train/val/test, got {split!r}")
+        if split_protocol not in ("official", "legacy"):
+            raise ValueError(f"unknown split_protocol {split_protocol!r}")
         if target_policy not in ("least_cloudy", "random_clear"):
             raise ValueError(f"unknown target_policy {target_policy!r}")
         if input_policy not in ("first", "nearest", "random"):
@@ -161,7 +184,14 @@ class SEN12MSCRTSDataset(Dataset):
             tiles.append((f"{region}/{roi}/{tile}", region, roi, tile, mf))
 
         if src_split == "train":
-            if val_tiles is None:
+            if split_protocol == "official":
+                tiles = [t for t in tiles if t[0] not in OFFICIAL_TEST_TILES]
+            if val_tiles is None and split_protocol == "official":
+                val_set = set(OFFICIAL_VAL_TILES)
+                missing = val_set - {t[0] for t in tiles}
+                if missing and not regions:
+                    raise FileNotFoundError(f"Official val tiles missing from the index: {sorted(missing)}")
+            elif val_tiles is None:
                 last_by_region: Dict[str, str] = {}
                 for key, region, *_ in tiles:
                     last_by_region[region] = key
@@ -370,4 +400,5 @@ class SEN12MSCRTSDataset(Dataset):
             val_tiles=list(ts.val_tiles) if ts.get("val_tiles") else None,
             augment=bool(cfg.data.get("augmentation", True)) and split == "train",
             regions=list(ts.regions) if ts.get("regions") else None,
+            split_protocol=ts.get("split_protocol", "official"),
         )

@@ -14,6 +14,8 @@
 #   (tsar_mask = target-date SAR + mask; temporal_concat = mask + concatenated dates;
 #    tsar_temporal = target-date SAR + temporal;
 #    tsar_temporal_change = tsar_temporal + explicit SAR change gating)
+# Optional second argument: official (default, checkpoints in bridge_ts_<exp>_official)
+# or legacy (the pre-Nov-2026 runs, which trained on copies of three test tiles).
 # Requires the cloud-mask index from 05_precompute_ts_clouds.slurm.
 # =============================================================================
 #SBATCH --job-name=bridge_ts
@@ -63,9 +65,18 @@ case "${EXP}" in
     tsar_temporal_change) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml configs/sen12mscrts_sar_change.yaml" ;;
     *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_a08 | temporal_concat | tsar_temporal | tsar_temporal_change)"; exit 1 ;;
 esac
+# Second argument: official (default; UnCRtainTS split, runs named *_official) or
+# legacy (the pre-Nov-2026 split that trained on copies of three test tiles).
+SPLIT="${2:-official}"
+case "${SPLIT}" in
+    official) RUN_SUFFIX="_official" ;;
+    legacy)   RUN_SUFFIX=""; EXTRA_CONFIGS="${EXTRA_CONFIGS} data.ts.split_protocol=legacy" ;;
+    *)        echo "[ERROR] unknown split '${SPLIT}' (expected official | legacy)"; exit 1 ;;
+esac
 
 TOTAL_EPOCHS=100
-CKPT_DIR="${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}"
+NAME="bridge_ts_${EXP}${RUN_SUFFIX}"
+CKPT_DIR="${SCRATCH}/outputs/checkpoints/${NAME}"
 LAST_CKPT="${CKPT_DIR}/latest.ckpt"
 THIS_SCRIPT="${ROOT_DIR}/scripts/slurm/02_train_ts.slurm"
 MASK_DIR="${SCRATCH}/Dataset/SEN12MSCRTS/cloud_masks"
@@ -88,7 +99,7 @@ conda activate cloud-env
 python -c "import omegaconf, lpips, rasterio" || { echo "[ERROR] cloud-env broken"; exit 1; }
 
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  SAR Bridge Training — SEN12MS-CR-TS (T=3) — experiment: ${EXP}"
+echo "  SAR Bridge Training — SEN12MS-CR-TS (T=3) — experiment: ${EXP}  split: ${SPLIT}"
 echo "  Configs: ${EXTRA_CONFIGS}"
 echo "  Job ID : ${SLURM_JOB_ID}   Node: ${SLURMD_NODENAME}"
 echo "  Ckpts  : ${CKPT_DIR}"
@@ -97,7 +108,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
     echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
-    sbatch -J "bridge_ts_${EXP}" --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}" "${EXP}"
+    sbatch -J "${NAME}" --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}"
     exit 0
 fi
 
@@ -119,12 +130,12 @@ if [[ "${CURRENT_EPOCH}" -ge "${TOTAL_EPOCHS}" ]]; then
     if [[ -f "${CKPT_DIR}/.eval_submitted" ]]; then
         echo "[INFO] Evaluation already submitted ($(cat "${CKPT_DIR}/.eval_submitted"))"
     else
-        sbatch -J "eval_ts_${EXP}" "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" "${EXP}" | tee "${CKPT_DIR}/.eval_submitted"
+        sbatch -J "eval_ts_${EXP}${RUN_SUFFIX}" "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" "${EXP}" "${SPLIT}" | tee "${CKPT_DIR}/.eval_submitted"
     fi
     exit 0
 fi
 
-NEXT_JOB=$(sbatch -J "bridge_ts_${EXP}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" 2>&1)
+NEXT_JOB=$(sbatch -J "${NAME}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}" 2>&1)
 echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
 
 if [[ -f "${LAST_CKPT}" ]]; then

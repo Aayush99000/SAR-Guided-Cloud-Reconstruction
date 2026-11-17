@@ -38,16 +38,24 @@ case "${EXP}" in
     tsar_temporal_change) EXTRA_CONFIGS="configs/sen12mscrts.yaml configs/sen12mscrts_tsar.yaml configs/sen12mscrts_temporal.yaml configs/sen12mscrts_sar_change.yaml" ;;
     *)    echo "[ERROR] unknown experiment '${EXP}' (expected v1 | tsar | loss | mask | tsar_mask | temporal | temporal_a08 | temporal_concat | tsar_temporal | tsar_temporal_change)"; exit 1 ;;
 esac
-CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}/best.ckpt}"
+# Second argument: official (default; UnCRtainTS split, runs named *_official) or
+# legacy (the pre-Nov-2026 split that trained on copies of three test tiles).
+SPLIT="${2:-official}"
+case "${SPLIT}" in
+    official) RUN_SUFFIX="_official" ;;
+    legacy)   RUN_SUFFIX=""; EXTRA_CONFIGS="${EXTRA_CONFIGS} data.ts.split_protocol=legacy" ;;
+    *)        echo "[ERROR] unknown split '${SPLIT}' (expected official | legacy)"; exit 1 ;;
+esac
+CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}${RUN_SUFFIX}/best.ckpt}"
 JUDGE="${JUDGE:-${SCRATCH}/outputs/checkpoints/judge/best.ckpt}"
 WC_DIR="${SCRATCH}/Dataset/SEN12MSCRTS/worldcover"
 NFE="${NFE:-3}"
 LIMIT="${LIMIT:-0}"
 TAG="${TAG:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
-RUN="judge_ts_${EXP}${TAG:+_${TAG}}"
+RUN="judge_ts_${EXP}${RUN_SUFFIX}${TAG:+_${TAG}}"
 if [[ "${LIMIT}" -gt 0 ]]; then
-    OUT_DIR="${SCRATCH}/outputs/eval/judge_smoke_${EXP}"
+    OUT_DIR="${SCRATCH}/outputs/eval/judge_smoke_${EXP}${RUN_SUFFIX}"
 else
     OUT_DIR="${SCRATCH}/outputs/eval/${RUN}"
 fi

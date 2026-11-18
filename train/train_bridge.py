@@ -299,6 +299,7 @@ def build_dataloaders(cfg) -> Tuple[DataLoader, DataLoader]:
     val_ds   = build_dataset(cfg, split="val")
 
     _nw = cfg.training.num_workers
+    _pf = cfg.training.get("prefetch_factor", 2) if _nw > 0 else None
     train_loader = DataLoader(
         train_ds,
         batch_size=cfg.training.batch_size,
@@ -308,6 +309,7 @@ def build_dataloaders(cfg) -> Tuple[DataLoader, DataLoader]:
         drop_last=True,
         collate_fn=collate_fn,
         persistent_workers=(_nw > 0),
+        prefetch_factor=_pf,
     )
     val_loader = DataLoader(
         val_ds,
@@ -317,6 +319,7 @@ def build_dataloaders(cfg) -> Tuple[DataLoader, DataLoader]:
         pin_memory=True,
         collate_fn=collate_fn,
         persistent_workers=(_nw > 0),
+        prefetch_factor=_pf,
     )
     log.info(
         "Dataloaders | train=%d batches  val=%d batches",

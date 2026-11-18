@@ -54,7 +54,9 @@ Normalisation follows UnCRtainTS ``rescale_method='default'``:
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from datetime import date
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -109,6 +111,10 @@ class SEN12MSCRTSDataset(Dataset):
         split:           "train", "val" or "test".  "train" and "val" are
                          carved from the tiles under ``train/`` by holding out
                          whole tiles; "test" is the official test split.
+        pack_dir:        Output of scripts/pack_ts.py.  Tiles packed there are
+                         read from the memory-mapped arrays (bit-identical to
+                         the GeoTIFFs, ~3x less I/O, no per-sample file opens);
+                         other tiles fall back to the GeoTIFFs.
         split_protocol:  "official" drops the official test tiles from
                          train/val and holds out the official val tiles.
                          "legacy" (runs before Nov 2026) trains on every tile
@@ -144,6 +150,7 @@ class SEN12MSCRTSDataset(Dataset):
         augment: Optional[bool] = None,
         regions: Optional[Sequence[str]] = None,
         split_protocol: str = "official",
+        pack_dir: Optional[str | Path] = None,
     ) -> None:
         if split not in ("train", "val", "test"):
             raise ValueError(f"split must be train/val/test, got {split!r}")
@@ -202,9 +209,17 @@ class SEN12MSCRTSDataset(Dataset):
             tiles = [t for t in tiles if keep(t[0])]
         self.val_tiles = sorted(val_set) if src_split == "train" else []
 
+        pack_split = None
+        if pack_dir is not None and (Path(pack_dir) / "bands.json").exists():
+            packed_bands = json.loads((Path(pack_dir) / "bands.json").read_text())["optical_bands"]
+            if packed_bands == self.optical_bands:
+                pack_split = Path(pack_dir) / src_split
+            else:
+                log.warning("Pack %s holds bands %s, not %s: reading GeoTIFFs", pack_dir, packed_bands, self.optical_bands)
+
         self._tiles: List[Dict] = []
         self._index: List[Tuple[int, int]] = []
-        n_skipped = 0
+        n_skipped = n_packed = 0
         for key, region, roi, tile, mf in tiles:
             with np.load(mf, allow_pickle=False) as z:
                 meta = {k: z[k] for k in z.files}
@@ -215,10 +230,16 @@ class SEN12MSCRTSDataset(Dataset):
             else:
                 s2_dir = self.root / "train" / region / roi / tile / "S2"
                 s1_dir = self.root / "train" / region / roi / tile / "S1"
+            stem = mf.name[: -len("_meta.npz")]
+            s2_pack = pack_split / f"{stem}_s2.npy" if pack_split else None
+            s1_pack = pack_split / f"{stem}_s1.npy" if pack_split else None
+            if s2_pack is None or not (s2_pack.exists() and s1_pack.exists()):
+                s2_pack = s1_pack = None
+            n_packed += s2_pack is not None
             t_idx = len(self._tiles)
             self._tiles.append(dict(
                 key=key, region=region, roi=roi, tile=tile,
-                s2_dir=s2_dir, s1_dir=s1_dir,
+                s2_dir=s2_dir, s1_dir=s1_dir, s2_pack=s2_pack, s1_pack=s1_pack,
                 mask_path=mf.with_name(mf.name.replace("_meta.npz", "_masks.npy")),
                 patch_ids=meta["patch_ids"], coverage=meta["coverage"], valid=valid,
                 s2_dates=[str(d) for d in meta["s2_dates"]],
@@ -232,12 +253,13 @@ class SEN12MSCRTSDataset(Dataset):
                     n_skipped += 1
 
         self._masks_cache: Dict[int, np.ndarray] = {}
+        self._pack_cache: Dict[Tuple[int, str], Tuple[int, int, Tuple[int, ...], np.dtype]] = {}
         log.info(
             "SEN12MSCRTSDataset | split=%s | %d tiles | %d locations (%d skipped: too few valid dates) "
-            "| T=%d | target=%s inputs=%s exclude_target=%s input_cov=[%.2f, %.2f] target_sar=%s",
+            "| T=%d | target=%s inputs=%s exclude_target=%s input_cov=[%.2f, %.2f] target_sar=%s | packed tiles %d/%d",
             split, len(self._tiles), len(self._index), n_skipped, n_input,
             target_policy, input_policy, exclude_target_from_inputs, min_input_cov, max_input_cov,
-            include_target_sar,
+            include_target_sar, n_packed, len(self._tiles),
         )
 
     # ------------------------------------------------------------------
@@ -295,8 +317,39 @@ class SEN12MSCRTSDataset(Dataset):
         name = f"s1_{tile['roi']}_{tile['tile']}_ImgNo_{t}_{tile['s1_dates'][t]}_patch_{patch}.tif"
         return tile["s1_dir"] / str(t) / name
 
-    def _optical(self, path: Path) -> np.ndarray:
-        return _preprocess_s2(self._read(path, self.optical_bands))
+    def _pack_read(self, t_idx: int, modality: str, t: int, row: int) -> np.ndarray:
+        """One (C, H, W) slice of a packed tile, read with a single pread.
+
+        A memory map faults the slice in page by page, which on the NFS
+        /scratch turns one 0.5 MB read into many small ones.
+        """
+        entry = self._pack_cache.get((t_idx, modality))
+        if entry is None:
+            path = self._tiles[t_idx][f"{modality}_pack"]
+            m = np.load(path, mmap_mode="r")
+            entry = (os.open(path, os.O_RDONLY), m.offset, m.shape, m.dtype)
+            del m
+            self._pack_cache[(t_idx, modality)] = entry
+        fd, offset, shape, dtype = entry
+        nbytes = int(np.prod(shape[2:])) * dtype.itemsize
+        buf = os.pread(fd, nbytes, offset + (row * shape[1] + t) * nbytes)
+        return np.frombuffer(buf, dtype=dtype).reshape(shape[2:])
+
+    def _optical(self, t_idx: int, t: int, row: int) -> np.ndarray:
+        tile = self._tiles[t_idx]
+        if tile["s2_pack"] is not None:
+            raw = self._pack_read(t_idx, "s2", t, row)
+        else:
+            raw = self._read(self._s2_path(tile, t, int(tile["patch_ids"][row])), self.optical_bands)
+        return _preprocess_s2(raw)
+
+    def _radar(self, t_idx: int, t: int, row: int) -> np.ndarray:
+        tile = self._tiles[t_idx]
+        if tile["s1_pack"] is not None:
+            raw = self._pack_read(t_idx, "s1", t, row)
+        else:
+            raw = self._read(self._s1_path(tile, t, int(tile["patch_ids"][row])))
+        return _preprocess_s1(raw)
 
     # ------------------------------------------------------------------
     # Dataset protocol
@@ -313,10 +366,10 @@ class SEN12MSCRTSDataset(Dataset):
         target, inputs, coverage_match = self._select(coverage, tile["valid"][row])
         h, w = tile["hw"]
 
-        clean = self._optical(self._s2_path(tile, target, patch))
-        cloudy_stack = np.stack([self._optical(self._s2_path(tile, t, patch)) for t in inputs])
+        clean = self._optical(t_idx, target, row)
+        cloudy_stack = np.stack([self._optical(t_idx, t, row) for t in inputs])
         sar_dates = list(inputs) + ([target] if self.include_target_sar else [])
-        sar = np.concatenate([_preprocess_s1(self._read(self._s1_path(tile, t, patch))) for t in sar_dates])
+        sar = np.concatenate([self._radar(t_idx, t, row) for t in sar_dates])
 
         packed = self._masks(t_idx)[row, inputs]                              # (T, H*W/8)
         in_masks = np.unpackbits(packed, axis=-1, count=h * w).reshape(len(inputs), h, w).astype(bool)
@@ -401,4 +454,5 @@ class SEN12MSCRTSDataset(Dataset):
             augment=bool(cfg.data.get("augmentation", True)) and split == "train",
             regions=list(ts.regions) if ts.get("regions") else None,
             split_protocol=ts.get("split_protocol", "official"),
+            pack_dir=cfg.paths.get("ts_pack_dir", None),
         )

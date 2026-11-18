@@ -133,7 +133,7 @@ class LandCoverDataset(Dataset):
         t = int(clear[torch.randint(len(clear), (1,)).item()]) if self.policy == "random" else least
         tile = self.base._tiles[t_idx]
         h, w = tile["hw"]
-        image = self.base._optical(self.base._s2_path(tile, t, int(tile["patch_ids"][row])))
+        image = self.base._optical(t_idx, t, row)
         label = self.labels(t_idx, row).copy()
         cloudy = np.unpackbits(self.base._masks(t_idx)[row, t], count=h * w).reshape(h, w).astype(bool)
         label[cloudy] = IGNORE_INDEX

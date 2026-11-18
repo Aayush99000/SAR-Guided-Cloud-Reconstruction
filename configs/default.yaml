@@ -14,6 +14,7 @@ training:
   grad_clip: 1.0
   accumulate_grad_batches: 1      # set >1 to simulate larger batch sizes
   num_workers: 4
+  prefetch_factor: 4              # batches each loader worker keeps ready (PyTorch default 2)
   val_every_n_epochs: 2
   save_every_n_epochs: 1
   early_stopping_patience: 15  # stop if val PSNR doesn't improve for this many epochs

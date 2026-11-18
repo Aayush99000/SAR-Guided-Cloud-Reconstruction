@@ -5,6 +5,8 @@
 paths:
   data_root: /scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction/Dataset/SEN12MSCRTS
   ts_mask_dir: /scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction/Dataset/SEN12MSCRTS/cloud_masks
+  # scripts/pack_ts.py output; packed tiles are read from it, the rest from the GeoTIFFs
+  ts_pack_dir: /scratch/katoch.aa/SAR-Guided-Cloud-Reconstruction/Dataset/SEN12MSCRTS/packed
   bridge_ckpt_dir: ${paths.output_root}/checkpoints/bridge_ts_v1
 
 loss:

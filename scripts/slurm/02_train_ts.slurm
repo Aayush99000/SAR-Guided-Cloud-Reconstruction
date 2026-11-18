@@ -145,9 +145,9 @@ fi
 
 # Pre-schedule the next session. sbatch fails while the per-user submit limit
 # (8 on gpu) is full, which used to end the chain under set -e; retry in the
-# background for up to 2 h while this session trains.
+# background for the whole session (other projects can hold the limit for hours).
 (
-    for attempt in $(seq 1 120); do
+    for attempt in $(seq 1 460); do
         if NEXT_JOB=$(sbatch -J "${NAME}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}" 2>&1); then
             echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
             exit 0

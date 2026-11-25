@@ -53,6 +53,10 @@ case "${SPLIT}" in
     legacy)   RUN_SUFFIX=""; EXTRA_CONFIGS="${EXTRA_CONFIGS} data.ts.split_protocol=legacy" ;;
     *)        echo "[ERROR] unknown split '${SPLIT}' (expected official | legacy)"; exit 1 ;;
 esac
+# Optional third argument: the training seed, as in 02_train_ts.slurm (default 42);
+# other seeds read bridge_ts_<exp><split suffix>_s<seed> and write ts_<exp>..._s<seed>.
+SEED="${3:-42}"
+if [[ "${SEED}" != "42" ]]; then RUN_SUFFIX="${RUN_SUFFIX}_s${SEED}"; fi
 CKPT="${CKPT:-${SCRATCH}/outputs/checkpoints/bridge_ts_${EXP}${RUN_SUFFIX}/best.ckpt}"
 TAG="${TAG:-}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"

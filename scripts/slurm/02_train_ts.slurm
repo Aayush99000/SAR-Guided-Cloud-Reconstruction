@@ -73,6 +73,14 @@ case "${SPLIT}" in
     legacy)   RUN_SUFFIX=""; EXTRA_CONFIGS="${EXTRA_CONFIGS} data.ts.split_protocol=legacy" ;;
     *)        echo "[ERROR] unknown split '${SPLIT}' (expected official | legacy)"; exit 1 ;;
 esac
+# Optional third argument: training seed (default 42, configs/default.yaml).
+# Other seeds train into bridge_ts_<exp><split suffix>_s<seed>:
+#   sbatch -J bridge_ts_v1_official_s1 scripts/slurm/02_train_ts.slurm v1 official 1
+SEED="${3:-42}"
+if [[ "${SEED}" != "42" ]]; then
+    RUN_SUFFIX="${RUN_SUFFIX}_s${SEED}"
+    EXTRA_CONFIGS="${EXTRA_CONFIGS} training.seed=${SEED}"
+fi
 
 TOTAL_EPOCHS=100
 NAME="bridge_ts_${EXP}${RUN_SUFFIX}"
@@ -108,7 +116,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 
 if ! python -c "import torch; torch.cuda.init(); print(f'[INFO] PyTorch {torch.__version__} | {torch.cuda.get_device_name(0)}')" 2>/dev/null; then
     echo "[WARN] Bad GPU driver on ${SLURMD_NODENAME} — resubmitting excluding this node"
-    sbatch -J "${NAME}" --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}"
+    sbatch -J "${NAME}" --exclude="${SLURMD_NODENAME}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}" "${SEED}"
     exit 0
 fi
 
@@ -132,7 +140,7 @@ if [[ "${CURRENT_EPOCH}" -ge "${TOTAL_EPOCHS}" ]]; then
     else
         # Retry while the submit limit is full (an array of 2 needs 2 free slots)
         for attempt in $(seq 1 120); do
-            if EVAL_JOB=$(sbatch -J "eval_ts_${EXP}${RUN_SUFFIX}" "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" "${EXP}" "${SPLIT}" 2>&1); then
+            if EVAL_JOB=$(sbatch -J "eval_ts_${EXP}${RUN_SUFFIX}" "${ROOT_DIR}/scripts/slurm/03_eval_ts.slurm" "${EXP}" "${SPLIT}" "${SEED}" 2>&1); then
                 echo "${EVAL_JOB}" | tee "${CKPT_DIR}/.eval_submitted"
                 break
             fi
@@ -148,14 +156,14 @@ fi
 # background for the whole session (other projects can hold the limit for hours).
 (
     for attempt in $(seq 1 460); do
-        if NEXT_JOB=$(sbatch -J "${NAME}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}" 2>&1); then
+        if NEXT_JOB=$(sbatch -J "${NAME}" --dependency=afterany:"${SLURM_JOB_ID}" "${THIS_SCRIPT}" "${EXP}" "${SPLIT}" "${SEED}" 2>&1); then
             echo "[INFO] Pre-scheduled next session: ${NEXT_JOB}"
             exit 0
         fi
         echo "[WARN] Could not pre-schedule the next session (attempt ${attempt}): ${NEXT_JOB}"
         sleep 60
     done
-    echo "[ERROR] Next session never scheduled; resubmit by hand: sbatch -J ${NAME} ${THIS_SCRIPT} ${EXP} ${SPLIT}"
+    echo "[ERROR] Next session never scheduled; resubmit by hand: sbatch -J ${NAME} ${THIS_SCRIPT} ${EXP} ${SPLIT} ${SEED}"
 ) &
 
 if [[ -f "${LAST_CKPT}" ]]; then

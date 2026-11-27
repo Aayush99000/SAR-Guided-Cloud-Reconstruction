@@ -173,8 +173,9 @@ def train_vqgan(cfg) -> None:
                     f"g={g_loss:.4f} d={d_loss:.4f}"
                 )
 
-        # Checkpoint
-        if epoch % cfg.training.save_every_n_epochs == 0:
+        # Checkpoint (save_every_n_epochs: 0 disables)
+        save_every = cfg.training.save_every_n_epochs
+        if save_every > 0 and epoch % save_every == 0:
             torch.save(
                 {
                     "encoder": encoder.state_dict(),

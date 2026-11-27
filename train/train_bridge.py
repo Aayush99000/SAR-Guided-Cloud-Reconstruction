@@ -666,8 +666,9 @@ def train(cfg) -> None:
                 )
                 break
 
-        # --- Periodic checkpoint ---
-        if epoch % cfg.training.save_every_n_epochs == 0:
+        # --- Periodic checkpoint (save_every_n_epochs: 0 disables) ---
+        save_every = cfg.training.save_every_n_epochs
+        if save_every > 0 and epoch % save_every == 0:
             save_checkpoint(
                 ckpt_dir / f"epoch_{epoch:04d}.ckpt",
                 epoch=epoch,
